@@ -1,6 +1,7 @@
 import pandas as pd
 import requests
 from pathlib import Path
+from src.utils import config
 from src.utils.logger import logging
 
 
@@ -228,7 +229,7 @@ def fetch_all_entities(bronze_dir: Path, force: bool = False) -> dict:
 if __name__ == "__main__":
     BRONZE_DIR = Path(r'C:\Users\Asus\Desktop\Formula1\data\bronze')
  
-    results = fetch_all_entities(BRONZE_DIR, force=False)
+    results = fetch_all_entities(bronze_dir=BRONZE_DIR, force=config.FORCE)
  
     print("\nDrivers:")
     print(results["drivers"].head())
