@@ -7,6 +7,37 @@ from src.utils.logger import logging
 BASE_URL     = "https://api.jolpi.ca/ergast/f1"
 
 
+
+# =============================================================================
+# NEW DATA CHECKER — tells if new data added to api
+# =============================================================================
+
+
+def has_new_data(save_path: Path, endpoint: str) -> bool:
+    """
+    Hit the API with limit=1 just to get the total count.
+    Compare against rows saved on disk.
+    Returns True if API has more records than local file.
+    """
+    try:
+        url      = f"{BASE_URL}{endpoint}?limit=1&offset=0"
+        response = requests.get(url, timeout=15)
+        response.raise_for_status()
+        api_total  = int(response.json()["MRData"]["total"])
+        disk_total = len(pd.read_parquet(save_path))
+
+        if api_total != disk_total:
+            logging.info(f"  New data detected — API: {api_total}, disk: {disk_total}")
+            return True
+
+        logging.info(f"  No new data — {disk_total} records up to date")
+        return False
+
+    except Exception as e:
+        logging.warning(f"  Could not check for new data: {e} — will re-fetch")
+        return True   
+
+
 # =============================================================================
 # GENERIC FETCH FUNCTION
 # =============================================================================
@@ -43,8 +74,9 @@ def fetch_entity(
 
     # ── Idempotency ───────────────────────────────────────────────────────
     if save_path.exists() and not force:
-        logging.info(f"  {save_name} already exists — loading from disk")
-        return pd.read_parquet(save_path)
+        if not has_new_data(save_path, endpoint):
+            return pd.read_parquet(save_path)
+        logging.info(f"  Updating {save_name} with new records...")
 
     # ── Paginated fetch ───────────────────────────────────────────────────
     logging.info(f"  Fetching {save_name} from Jolpica...")
@@ -194,7 +226,7 @@ def fetch_all_entities(bronze_dir: Path, force: bool = False) -> dict:
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    BRONZE_DIR = Path(r'C:\Users\Asus\Desktop\Formula1_exp\data\bronze')
+    BRONZE_DIR = Path(r'C:\Users\Asus\Desktop\Formula1\data\bronze')
  
     results = fetch_all_entities(BRONZE_DIR, force=False)
  
