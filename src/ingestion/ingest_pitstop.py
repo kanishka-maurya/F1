@@ -1,5 +1,4 @@
 import datetime
-import logging
 import time
 import requests
 import pandas as pd
@@ -13,30 +12,38 @@ from src.utils.utility import safe_get, build_session, get_season_rounds, parse_
 # BUILD SESSION
 SESSION = build_session()
 
+
+def get_season_rounds_from_api(year: int) -> list[int]:
+    """Fetch round numbers from Jolpica API (fallback only)."""
+    url = f"{config.BASE_URL}/{year}/races.json?limit=30"
+    try:
+        response = safe_get(url)
+        races    = response.json()["MRData"]["RaceTable"]["Races"]
+        return [int(r["round"]) for r in races]
+    except Exception as e:
+        logging.error(f"  Could not fetch rounds for {year}: {e}")
+        return []
+
+
 # =============================================================================
 # FETCH ALL PAGES FOR ONE RACE
 # =============================================================================
 
-def fetch_all_lap_pages(year: int, round_num: int) -> list[dict]:
+def fetch_all_pitstop_pages(year: int, round_num: int) -> list[dict]:
     """
-    Fetch all paginated lap data for a single race.
+    Fetch all paginated pit stop data for a single race.
 
-    The API returns laps grouped by lap number, each with a Timings list.
-    We fetch all pages and return the raw combined Laps list.
+    Pit stop data is small — most races have 30–50 pit stops total
+    so usually only one page needed. Pagination handled anyway for safety.
 
     Returns:
-        List of lap dicts:
-        [
-            {"number": "1", "Timings": [{"driverId": ..., "position": ..., "time": ...}]},
-            {"number": "2", "Timings": [...]},
-            ...
-        ]
+        List of raw pit stop dicts from the API
     """
-    all_laps = []
-    offset   = 0
+    all_pitstops = []
+    offset       = 0
 
     while True:
-        url = (f"{config.BASE_URL}/{year}/{round_num}/laps.json"
+        url = (f"{config.BASE_URL}/{year}/{round_num}/pitstops.json"
                f"?limit={config.PAGE_LIMIT}&offset={offset}")
         try:
             response = safe_get(url)
@@ -45,16 +52,17 @@ def fetch_all_lap_pages(year: int, round_num: int) -> list[dict]:
             races    = data["RaceTable"]["Races"]
 
             if not races:
-                # Race exists in schedule but lap data not available yet
-                logging.warning(f"  No lap data for {year} R{round_num:02d}")
+                logging.warning(
+                    f"  No pit stop data for {year} R{round_num:02d}"
+                )
                 return []
 
-            laps = races[0].get("Laps", [])
-            all_laps.extend(laps)
+            pitstops = races[0].get("PitStops", [])
+            all_pitstops.extend(pitstops)
 
             logging.info(
                 f"  Page offset={offset}: "
-                f"fetched {len(all_laps)}/{total} lap entries"
+                f"fetched {len(all_pitstops)}/{total} pit stops"
             )
 
             offset += config.PAGE_LIMIT
@@ -68,58 +76,54 @@ def fetch_all_lap_pages(year: int, round_num: int) -> list[dict]:
             )
             raise
 
-    return all_laps
+    return all_pitstops
+
 
 # =============================================================================
-# EXTRACT — flatten nested lap structure
+# EXTRACT
 # =============================================================================
 
-def extract_laps(all_laps: list[dict], year: int,
-                 round_num: int, race_info: dict) -> pd.DataFrame:
+def extract_pitstops(all_pitstops: list[dict], year: int,
+                     round_num: int, race_info: dict) -> pd.DataFrame:
     """
-    Flatten the nested lap structure into one row per driver per lap.
+    Extract and flatten pit stop data into one row per pit stop.
 
-    Input structure:
-        [
-          {
-            "number": "1",
-            "Timings": [
-              {"driverId": "verstappen", "position": "1", "time": "1:38.149"},
-              {"driverId": "leclerc",    "position": "2", "time": "1:38.576"},
-            ]
-          },
-          ...
-        ]
+    API response structure:
+        {
+            "driverId":  "verstappen",
+            "lap":       "14",
+            "stop":      "1",
+            "time":      "13:42:31",    ← local clock time of pit stop
+            "duration":  "23.456"       ← seconds in pit lane
+        }
 
-    Output (one row per driver per lap):
-        season  round  driver_ref   lap_number  position  lap_time  lap_time_ms
-        2024    1      verstappen   1           1         1:38.149  98149.0
-        2024    1      leclerc      1           2         1:38.576  98576.0
-        2024    1      verstappen   2           1         1:32.401  92401.0
-        ...
+    Derived columns:
+        duration_ms      : duration converted to milliseconds
     """
-    if not all_laps:
+    if not all_pitstops:
         return pd.DataFrame()
 
     records = []
+    for p in all_pitstops:
+        duration_str = p.get("duration")
+        duration_ms  = parse_laptime_to_ms(duration_str)
 
-    for lap in all_laps:
-        lap_number = int(lap.get("number", 0))
-        timings    = lap.get("Timings", [])
+        records.append({
+            # Race context
+            "season":          year,
+            "round_number":    round_num,
+            "race_name":       race_info.get("race_name"),
+            "circuit_ref":     race_info.get("circuit_ref"),
+            "race_date":       race_info.get("race_date"),
 
-        for t in timings:
-            records.append({
-                "season":       year,
-                "round_number": round_num,
-                "race_name":    race_info.get("race_name"),
-                "circuit_ref":  race_info.get("circuit_ref"),
-                "race_date":    race_info.get("race_date"),
-                "driver_ref":   t.get("driverId"),
-                "lap_number":   lap_number,
-                "position":     t.get("position"),
-                "lap_time":     t.get("time"),
-                "lap_time_ms":  parse_laptime_to_ms(t.get("time")),
-            })
+            # Pit stop data
+            "driver_ref":      p.get("driverId"),
+            "stop_number":     p.get("stop"),
+            "lap_number":      p.get("lap"),
+            "local_time":      p.get("time"),
+            "duration":        duration_str,
+            "duration_ms":     duration_ms,
+        })
 
     if not records:
         return pd.DataFrame()
@@ -127,21 +131,41 @@ def extract_laps(all_laps: list[dict], year: int,
     df = pd.DataFrame(records)
 
     # ── Type casting ──────────────────────────────────────────────────────
-    df["lap_number"] = pd.to_numeric(df["lap_number"], errors="coerce").astype("Int16")
-    df["position"]   = pd.to_numeric(df["position"],   errors="coerce").astype("Int16")
-    df["race_date"]  = pd.to_datetime(df["race_date"],  errors="coerce").dt.date
+    df["stop_number"] = pd.to_numeric(df["stop_number"], errors="coerce").astype("Int16")
+    df["lap_number"]  = pd.to_numeric(df["lap_number"],  errors="coerce").astype("Int16")
+    df["duration_ms"] = pd.to_numeric(df["duration_ms"], errors="coerce")
+    df["race_date"]   = pd.to_datetime(df["race_date"],  errors="coerce").dt.date
 
 
-    # Sort final output
-    df = df.sort_values(["lap_number", "position"]).reset_index(drop=True)
+    # ── Race-level pit stop stats per driver ──────────────────────────────
+    # Total stops per driver in this race
+    stop_counts = (
+        df.groupby("driver_ref")["stop_number"]
+        .max()
+        .reset_index()
+        .rename(columns={"stop_number": "total_stops_race"})
+    )
+    df = df.merge(stop_counts, on="driver_ref", how="left")
+
+    # Average pit duration per driver this race
+    avg_duration = (
+        df.groupby("driver_ref")["duration_ms"]
+        .mean()
+        .round(1)
+        .reset_index()
+        .rename(columns={"duration_ms": "avg_duration_ms_race"})
+    )
+    df = df.merge(avg_duration, on="driver_ref", how="left")
+
+    # ── Sort ──────────────────────────────────────────────────────────────
+    df = df.sort_values(["driver_ref", "stop_number"]).reset_index(drop=True)
 
     return df
 
 
 def get_race_info(year: int, round_num: int) -> dict:
-    """
-    Fetch basic race metadata (name, circuit, date) for context columns.
-    """
+    """Fetch basic race metadata for context columns."""
+    schedule_path = None  # will use API fallback
     url = f"{config.BASE_URL}/{year}/{round_num}/races.json"
     try:
         response = safe_get(url)
@@ -155,27 +179,54 @@ def get_race_info(year: int, round_num: int) -> dict:
             "race_date":   race.get("date"),
         }
     except Exception as e:
-        logging.warning(f"  Could not fetch race info for {year} R{round_num}: {e}")
+        logging.warning(f"  Could not fetch race info {year} R{round_num}: {e}")
         return {}
 
 
+def get_race_info_from_disk(schedule_dir: Path,
+                            year: int, round_num: int) -> dict:
+    """
+    Read race metadata from saved schedule parquet — zero API calls.
+    Falls back to API if schedule not found.
+    """
+    schedule_path = schedule_dir / f"{year}_schedule.parquet"
+
+    if schedule_path.exists():
+        df   = pd.read_parquet(schedule_path)
+        race = df[df["round_number"] == round_num]
+        if not race.empty:
+            row = race.iloc[0]
+            return {
+                "race_name":   row.get("race_name"),
+                "circuit_ref": row.get("circuit_ref"),
+                "race_date":   str(row.get("race_date", "")),
+            }
+
+    # Fallback to API
+    logging.warning(
+        f"  Schedule not on disk for {year} R{round_num} — fetching race info from API"
+    )
+    return get_race_info(year, round_num)
+
+
 # =============================================================================
-# SINGLE RACE INGESTION
+# SINGLE RACE PIT STOP FETCH
 # =============================================================================
 
-def fetch_race_laps(year: int, round_num: int) -> pd.DataFrame:
+def fetch_race_pitstops(year: int, round_num: int,
+                        schedule_dir: Path) -> pd.DataFrame:
     """
-    Fetch, flatten, and return all lap data for one race.
+    Fetch and extract all pit stop data for one race.
     """
-    race_info = get_race_info(year, round_num)
-    all_laps  = fetch_all_lap_pages(year, round_num)
+    race_info    = get_race_info_from_disk(schedule_dir, year, round_num)
+    all_pitstops = fetch_all_pitstop_pages(year, round_num)
 
-    if not all_laps:
+    if not all_pitstops:
         return pd.DataFrame()
 
-    df = extract_laps(all_laps, year, round_num, race_info)
+    df = extract_pitstops(all_pitstops, year, round_num, race_info)
     logging.info(
-        f"  Extracted {len(df)} rows for "
+        f"  Extracted {len(df)} pit stops for "
         f"{year} R{round_num:02d} ({race_info.get('race_name', '?')})"
     )
     return df
@@ -185,31 +236,31 @@ def fetch_race_laps(year: int, round_num: int) -> pd.DataFrame:
 # MAIN INGESTION FUNCTION
 # =============================================================================
 
-def fetch_lap_data(
-                   schedule_dir: Path,
-                   bronze_dir:  Path,
-                   start_year:  int,
-                   end_year:    int,
-                   force:       bool = False,
-                   single_year: int  = None,
-                   single_round: int = None) -> pd.DataFrame:
+def fetch_pit_stops(
+                    schedule_dir: Path,
+                    bronze_dir:   Path,
+                    start_year:   int,
+                    end_year:     int,
+                    force:        bool = False,
+                    single_year:  int  = None,
+                    single_round: int  = None) -> pd.DataFrame:
     """
-    Fetch lap data for all seasons and rounds.
+    Fetch pit stop data for all seasons and rounds.
     Saves one parquet per race and one combined master file.
 
     Parameters:
         bronze_dir   : Path to bronze folder
-        start_year   : First season to ingest
+        start_year   : First season to ingest (min 2012)
         end_year     : Last season to ingest
         force        : Re-fetch all races even if files exist
-        single_year  : Ingest only this season (overrides start/end)
+        single_year  : Ingest only this season
         single_round : Ingest only this round within single_year
     """
     bronze_dir   = Path(bronze_dir)
-    laps_dir     = bronze_dir / "laps"
-    laps_dir.mkdir(parents=True, exist_ok=True)
+    pitstops_dir = bronze_dir / "pit_stops"
+    pitstops_dir.mkdir(parents=True, exist_ok=True)
 
-    master_path  = laps_dir / "all_seasons_laps.parquet"
+    master_path  = pitstops_dir / "all_seasons_pit_stops.parquet"
     current_year = datetime.datetime.now().year
     new_dfs      = []
 
@@ -217,7 +268,14 @@ def fetch_lap_data(
     if single_year:
         year_range = [single_year]
     else:
-        year_range = range(start_year, end_year + 1)
+        # Clamp start year to 2012 minimum
+        effective_start = max(start_year, config.PIT_DATA_START_YEAR)
+        if start_year < config.PIT_DATA_START_YEAR:
+            logging.warning(
+                f"  Pit stop data not available before {config.PIT_DATA_START_YEAR}. "
+                f"Starting from {config.PIT_DATA_START_YEAR}."
+            )
+        year_range = range(effective_start, end_year + 1)
 
     for year in year_range:
         is_current_season = (year == current_year)
@@ -237,7 +295,7 @@ def fetch_lap_data(
         logging.info(f"  {len(rounds)} rounds to process")
 
         for round_num in rounds:
-            save_path = laps_dir / f"{year}_R{round_num:02d}_laps.parquet"
+            save_path = pitstops_dir / f"{year}_R{round_num:02d}_pit_stops.parquet"
 
             # ── Skip if already fetched ───────────────────────────────────
             if save_path.exists() and save_path.stat().st_size > 0 \
@@ -246,9 +304,9 @@ def fetch_lap_data(
                 continue
 
             # ── Fetch ─────────────────────────────────────────────────────
-            logging.info(f"  Fetching {year} R{round_num:02d} laps...")
+            logging.info(f"  Fetching {year} R{round_num:02d} pit stops...")
             try:
-                df_round = fetch_race_laps(year, round_num)
+                df_round = fetch_race_pitstops(year, round_num, schedule_dir)
             except Exception as e:
                 logging.error(
                     f"  Failed {year} R{round_num:02d}: {e} — skipping"
@@ -257,15 +315,15 @@ def fetch_lap_data(
 
             if df_round.empty:
                 logging.warning(
-                    f"  No lap data for {year} R{round_num:02d} — skipping"
+                    f"  No pit stop data for {year} R{round_num:02d} — skipping"
                 )
                 continue
 
             # ── Save individual race file ─────────────────────────────────
             df_round.to_parquet(save_path, index=False, compression="snappy")
             logging.info(
-                f"  Saved {year}_R{round_num:02d}_laps.parquet "
-                f"({len(df_round):,} rows)"
+                f"  Saved {year}_R{round_num:02d}_pit_stops.parquet "
+                f"({len(df_round)} stops)"
             )
             new_dfs.append(df_round)
 
@@ -283,28 +341,28 @@ def fetch_lap_data(
         if master_path.exists():
             master = pd.read_parquet(master_path)
 
-            # Remove current season to avoid duplicates
+            # Remove current season rows to avoid duplicates
             master = master[master["season"] != current_year]
 
             master = pd.concat([master, new_data], ignore_index=True)
             master = master.sort_values(
-                ["season", "round_number", "lap_number", "position"]
+                ["season", "round_number", "driver_ref", "stop_number"]
             ).reset_index(drop=True)
 
         else:
             # Build master from all individual files
             logging.info("  Master not found — building from individual files...")
-            all_files = sorted(laps_dir.glob("*_R*_laps.parquet"))
+            all_files = sorted(pitstops_dir.glob("*_R*_pit_stops.parquet"))
 
             if not all_files:
-                logging.warning("  No lap parquet files found.")
+                logging.warning("  No pit stop parquet files found.")
                 master = pd.DataFrame()
             else:
                 master = pd.concat(
                     [pd.read_parquet(f) for f in all_files],
                     ignore_index=True
                 ).sort_values(
-                    ["season", "round_number", "lap_number", "position"]
+                    ["season", "round_number", "driver_ref", "stop_number"]
                 ).reset_index(drop=True)
 
         master.to_parquet(master_path, index=False, compression="snappy")
@@ -317,17 +375,18 @@ def fetch_lap_data(
             return pd.DataFrame()
 
         logging.info("  No new rounds fetched — master unchanged, loading from disk")
-        master = pd.read_parquet(master_path)   
+        master = pd.read_parquet(master_path)
+    
 
     return master
-
 
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
 
-    df = fetch_lap_data(
-        schedule_dir = config.BRONZE_DIR / "schedule",
+
+    df = fetch_pit_stops(
+        schedule_dir = config.BRONZE_DIR / "schedule", 
         bronze_dir   = config.BRONZE_DIR,
         start_year   = config.START_YEAR,
         end_year     = config.END_YEAR,
@@ -336,10 +395,11 @@ if __name__ == "__main__":
         single_round = config.ROUND,
     )
 
-    print(f"\nShape    : {df.shape}")
-    print(f"Seasons  : {sorted(df['season'].unique())}")
-    print(f"Columns  : {list(df.columns)}")
+    print(f"\nShape         : {df.shape}")
+    print(f"Seasons       : {sorted(df['season'].unique())}")
+    print(f"Columns       : {list(df.columns)}")
+
     
-    print("\nLAPS DATA:")
+    print("\nPITSTOP DATA:")
     logging.info(df.head())
     print(df.head())

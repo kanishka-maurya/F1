@@ -1,0 +1,176 @@
+# ------------------------------------------------------------ ingest_qualifying ------------------------------------------------------------
+
+"""
+Qualifying Results Ingestion — Jolpica API → Bronze Parquet
+===========================================================
+Endpoint : https://api.jolpi.ca/ergast/f1/{year}/{round}/qualifying.json
+Coverage : 2010 – 2025 (all races, all drivers)
+
+What this data contains:
+    - Q1, Q2, Q3 lap times per driver per race weekend
+    - Grid position (final starting position after penalties)
+    - Gap to pole position (computed here)
+    - Teammate gap (computed here)
+
+Output:
+    bronze/qualifying/
+    ├── 2010_R01_qualifying.parquet
+    ├── 2010_R02_qualifying.parquet
+    ├── ...
+    ├── 2025_R24_qualifying.parquet
+    └── all_seasons_qualifying.parquet   ← combined master file
+
+Note on data availability:
+    - Q1/Q2/Q3 times available from ~2006 onwards
+    - Some rounds only have Q1/Q2 if session was wet or cancelled
+    - Pre-2003 format was different (single session) — not relevant for 2010+
+
+Usage:
+    python -m src.ingestion.ingest_qualifying
+    python -m src.ingestion.ingest_qualifying --force
+"""
+
+
+# ------------------------------------------------------------ ingest_weather ------------------------------------------------------------
+
+
+"""
+Weather Data Ingestion — FastF1 → Bronze Parquet
+================================================
+Source   : FastF1 session.weather_data
+Coverage : 2018 – 2025 (FastF1 weather data reliable from 2018)
+
+Note on source:
+    Weather data is NOT available from Jolpica/Ergast API.
+    FastF1 provides weather readings recorded during the race session
+    at ~1 minute intervals from official F1 timing feeds.
+
+What this data contains:
+    - Air temperature (°C)
+    - Track temperature (°C)
+    - Humidity (%)
+    - Pressure (mbar)
+    - Wind speed (m/s) and direction (degrees)
+    - Rainfall (boolean)
+    All recorded at session_time intervals during the race.
+
+Output:
+    bronze/weather/
+    ├── 2018_R01_weather.parquet      (~80–120 rows per race)
+    ├── 2018_R02_weather.parquet
+    ├── ...
+    ├── 2025_R24_weather.parquet
+    └── all_seasons_weather.parquet   ← combined master file
+
+Usage:
+    python -m src.ingestion.ingest_weather
+    python -m src.ingestion.ingest_weather --force
+    python -m src.ingestion.ingest_weather --year 2024
+    python -m src.ingestion.ingest_weather --year 2024 --round 1
+"""
+
+# ------------------------------------------------------------ ingest_laps ------------------------------------------------------------
+
+"""
+Lap Data Ingestion — Jolpica API → Bronze Parquet
+=================================================
+Endpoint : https://api.jolpi.ca/ergast/f1/{year}/{round}/laps.json
+Coverage : 2010 – 2025, all races, all drivers, all laps
+
+Response structure (nested):
+    Race → Laps[lap_number] → Timings[driver] → position, time
+
+So one API response looks like:
+    Lap 1 → [verstappen pos=1 time=1:38.1, leclerc pos=2 time=1:38.5, ...]
+    Lap 2 → [verstappen pos=1 time=1:32.4, leclerc pos=2 time=1:32.8, ...]
+
+We flatten this to one row per driver per lap.
+
+Output:
+    bronze/laps/
+    ├── 2010_R01_laps.parquet      (~1,200 rows)
+    ├── 2010_R02_laps.parquet
+    ├── ...
+    ├── 2025_R24_laps.parquet
+    └── all_seasons_laps.parquet   ← combined master (~432,000 rows)
+
+Pagination:
+    Each race has ~1,200 rows. With limit=100 that is ~12 API calls per race.
+    With ~340 races total that is ~4,000 API calls for full ingestion.
+    RATE_LIMIT_DELAY ensures we don't hammer the API.
+
+Usage:
+    python -m src.ingestion.ingest_laps
+    python -m src.ingestion.ingest_laps --force
+    python -m src.ingestion.ingest_laps --year 2024          # single season
+    python -m src.ingestion.ingest_laps --year 2024 --round 1 # single race
+"""
+
+# ------------------------------------------------------------ ingest_pitstop ------------------------------------------------------------
+
+"""
+Pit Stops Ingestion — Jolpica API → Bronze Parquet
+===================================================
+Endpoint : https://api.jolpi.ca/ergast/f1/{year}/{round}/pitstops.json
+Coverage : 2012 – 2025 (Jolpica pit stop data starts from 2012)
+
+What this data contains:
+    - Lap number when pit stop occurred
+    - Duration of pit stop (time stationary in pit lane)
+    - Local time of pit stop
+    - Stop number per driver (1st stop, 2nd stop etc.)
+
+Note on data availability:
+    Jolpica pit stop data is only available from 2012 onwards.
+    Pre-2012 seasons will be skipped with a warning.
+
+Output:
+    bronze/pit_stops/
+    ├── 2012_R01_pit_stops.parquet
+    ├── 2012_R02_pit_stops.parquet
+    ├── ...
+    ├── 2025_R24_pit_stops.parquet
+    └── all_seasons_pit_stops.parquet   ← combined master file
+
+Usage:
+    python -m src.ingestion.ingest_pit_stops
+    python -m src.ingestion.ingest_pit_stops --force
+    python -m src.ingestion.ingest_pit_stops --year 2024
+    python -m src.ingestion.ingest_pit_stops --year 2024 --round 1
+"""
+
+# ------------------------------------------------------------ ingest_telemetry ------------------------------------------------------------
+
+
+"""
+Telemetry Ingestion — FastF1 → Bronze Parquet
+=============================================
+Source   : FastF1 session.laps.get_car_data() per lap per driver
+Coverage : 2018 – 2025 (FastF1 telemetry reliable from 2018)
+
+IMPORTANT — Why we aggregate and not store raw:
+    Raw telemetry = 240 samples/sec × 5400 sec race × 20 drivers
+                  = ~26 million rows per race
+                  = ~8 billion rows for all seasons
+    This is unworkable for PostgreSQL or even Parquet on a local machine.
+
+    Solution: aggregate to one row per lap per driver.
+    Aggregated = ~1,200 rows per race × 340 races = ~408,000 rows total.
+    This preserves all meaningful signals for ML while being storage-safe.
+
+What we extract per lap per driver:
+    Speed      → avg, max, min
+    Throttle   → avg %, full throttle % (time at 100%)
+    Brake      → avg, heavy braking % (time braking hard)
+    DRS        → % of lap with DRS open
+    Gear       → avg gear, gear changes count
+    RPM        → avg, max
+
+Output:
+    bronze/telemetry/
+    ├── 2018_R01_telemetry.parquet     (~1,200 rows per race)
+    ├── 2018_R02_telemetry.parquet
+    ├── ...
+    ├── 2025_R24_telemetry.parquet
+    └── all_seasons_telemetry.parquet  ← combined master (~408,000 rows)
+"""

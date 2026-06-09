@@ -7,79 +7,19 @@ import datetime
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import time
+from src.utils.utility import safe_get, build_session
 
-
-RATE_LIMIT_DELAY = 1.0
-INTER_SEASON_DELAY = 3.0
-
-
-def _build_session() -> requests.Session:
-    """
-    Create a requests.Session with automatic retry + exponential backoff.
+# BUILD SESSION
+SESSION = build_session()
  
-    Retry schedule with backoff_factor=2:
-        attempt 1 → wait  2 s
-        attempt 2 → wait  4 s
-        attempt 3 → wait  8 s
-        attempt 4 → wait 16 s
-        attempt 5 → wait 32 s
- 
-    respect_retry_after_header=True means that if the server sends a
-    'Retry-After' header we honour it instead of using our own schedule.
-    """
-    session = requests.Session()
-    retry = Retry(
-        total=5,
-        backoff_factor=2,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET"],
-        respect_retry_after_header=True,
-        raise_on_status=False,   # we call raise_for_status ourselves
-    )
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    return session
- 
- 
-SESSION = _build_session()
-
-
 # =============================================================================
-# HELPERS
+# EXTRACT
 # =============================================================================
- 
-
-def _safe_get(url: str, timeout: int = 30) -> requests.Response:
-    """
-    GET with:
-      • a fixed inter-request delay (RATE_LIMIT_DELAY)
-      • the session's built-in retry / backoff
-      • a manual fallback for 429s that slip through (reads Retry-After)
- 
-    Raises requests.HTTPError on non-2xx after all retries are exhausted.
-    """
-    time.sleep(RATE_LIMIT_DELAY)
- 
-    while True:
-        response = SESSION.get(url, timeout=timeout)
- 
-        if response.status_code == 429:
-            # The urllib3 retry layer should have caught this, but handle it
-            # here as a belt-and-suspenders guard.
-            wait = int(response.headers.get("Retry-After", 10))
-            logging.warning(f"  429 received — waiting {wait}s before retry…")
-            time.sleep(wait)
-            continue  # retry immediately after the back-off window
- 
-        response.raise_for_status()
-        return response
-
 
 def fetch_race_schedule(bronze_dir: Path,
                         start_year: int,
                         end_year: int,
-                        force: bool = False) -> pd.DataFrame:
+                        force: bool) -> pd.DataFrame:
 
     bronze_dir   = Path(bronze_dir)
     schedule_dir = bronze_dir / "schedule"
@@ -102,8 +42,8 @@ def fetch_race_schedule(bronze_dir: Path,
         # ── Fetch from API ────────────────────────────────────────────────
         logging.info(f"  Fetching {year} schedule...")
         try:
-            url      = f"https://api.jolpi.ca/ergast/f1/{year}/races.json?limit=30"
-            response = _safe_get(url)
+            url      = f"{config.BASE_URL}/{year}/races.json?limit=30"
+            response = safe_get(url)
             races    = response.json()["MRData"]["RaceTable"]["Races"]
         except Exception as e:
             logging.error(f"  Failed to fetch {year}: {e}")
@@ -178,19 +118,22 @@ def fetch_race_schedule(bronze_dir: Path,
         master.to_parquet(master_path, index=False, compression="snappy")
         logging.info(f"  Master file updated — {len(master)} total races")
 
-    else:
-        # No new seasons — just load master as is
-        logging.info("  No new seasons fetched — loading master from disk")
-        master = pd.read_parquet(master_path)
+    else: 
+        # ── No new data ───────────────────────────────────────────────────────
+        if not master_path.exists():
+            logging.warning("  No new data and no master file — returning empty | Set FORCE = True.")
+            return pd.DataFrame()
+
+        logging.info("  No new seasons fetched — master unchanged, loading from disk")
+        master = pd.read_parquet(master_path)  
 
     return master
 
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    BRONZE_DIR = Path(r'C:\Users\Asus\Desktop\Formula1\data\bronze')
  
-    results = fetch_race_schedule(bronze_dir=BRONZE_DIR, start_year=config.START_YEAR, end_year=config.END_YEAR, force=config.FORCE)
+    results = fetch_race_schedule(bronze_dir=config.BRONZE_DIR, start_year=config.START_YEAR, end_year=config.END_YEAR, force=config.FORCE)
  
     print("\nRACE SCHEDULE DATA:")
     logging.info(results.head())

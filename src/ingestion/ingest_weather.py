@@ -1,38 +1,3 @@
-"""
-Weather Data Ingestion — FastF1 → Bronze Parquet
-================================================
-Source   : FastF1 session.weather_data
-Coverage : 2018 – 2025 (FastF1 weather data reliable from 2018)
-
-Note on source:
-    Weather data is NOT available from Jolpica/Ergast API.
-    FastF1 provides weather readings recorded during the race session
-    at ~1 minute intervals from official F1 timing feeds.
-
-What this data contains:
-    - Air temperature (°C)
-    - Track temperature (°C)
-    - Humidity (%)
-    - Pressure (mbar)
-    - Wind speed (m/s) and direction (degrees)
-    - Rainfall (boolean)
-    All recorded at session_time intervals during the race.
-
-Output:
-    bronze/weather/
-    ├── 2018_R01_weather.parquet      (~80–120 rows per race)
-    ├── 2018_R02_weather.parquet
-    ├── ...
-    ├── 2025_R24_weather.parquet
-    └── all_seasons_weather.parquet   ← combined master file
-
-Usage:
-    python -m src.ingestion.ingest_weather
-    python -m src.ingestion.ingest_weather --force
-    python -m src.ingestion.ingest_weather --year 2024
-    python -m src.ingestion.ingest_weather --year 2024 --round 1
-"""
-
 import datetime
 import logging
 import argparse
@@ -45,78 +10,10 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from src.utils import config
 from src.utils.logger import logging
+from src.utils.utility import safe_get, build_session, get_season_rounds, parse_laptime_to_ms, timedelta_to_ms
 
-
-BASE_URL           = "https://api.jolpi.ca/ergast/f1"
-RATE_LIMIT_DELAY   = 0.8
-INTER_SEASON_DELAY = 3.0
-
-
-# =============================================================================
-# SESSION WITH RETRY + BACKOFF  (for schedule fetch only)
-# =============================================================================
-
-def _build_session() -> requests.Session:
-    session = requests.Session()
-    retry   = Retry(
-        total                      = 5,
-        backoff_factor             = 2,
-        status_forcelist           = [429, 500, 502, 503, 504],
-        allowed_methods            = ["GET"],
-        respect_retry_after_header = True,
-        raise_on_status            = False,
-    )
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount("https://", adapter)
-    session.mount("http://",  adapter)
-    return session
-
-
-SESSION = _build_session()
-
-
-# =============================================================================
-# SAFE HTTP GET
-# =============================================================================
-
-def _safe_get(url: str, timeout: int = 30) -> requests.Response:
-    time.sleep(RATE_LIMIT_DELAY)
-    while True:
-        response = SESSION.get(url, timeout=timeout)
-        if response.status_code == 429:
-            wait = int(response.headers.get("Retry-After", 10))
-            logging.warning(f"  429 received — waiting {wait}s...")
-            time.sleep(wait)
-            continue
-        response.raise_for_status()
-        return response
-
-
-# =============================================================================
-# HELPERS
-# =============================================================================
-
-def get_season_rounds(year: int) -> list[int]:
-    """Fetch round numbers for a season from Jolpica."""
-    url = f"{BASE_URL}/{year}/races.json?limit=30"
-    try:
-        response = _safe_get(url)
-        races    = response.json()["MRData"]["RaceTable"]["Races"]
-        return [int(r["round"]) for r in races]
-    except Exception as e:
-        logging.error(f"  Could not fetch rounds for {year}: {e}")
-        return []
-
-
-def timedelta_to_ms(td) -> float | None:
-    """Convert pandas Timedelta to milliseconds. Returns None if NaT."""
-    try:
-        if pd.isnull(td):
-            return None
-        return round(td.total_seconds() * 1000, 1)
-    except Exception:
-        return None
-
+# BUILD SESSION
+SESSION = build_session()
 
 # =============================================================================
 # EXTRACT — weather from FastF1 session
@@ -232,7 +129,7 @@ def fetch_race_weather(year: int, round_num: int,
     try:
         session = fastf1.get_session(year, round_num, "R")
 
-        # Load only weather — skip laps, telemetry, messages (faster)
+        # Load only weather — skip laps, telemetry, messages 
         session.load(
             laps      = False,
             telemetry = False,
@@ -254,7 +151,9 @@ def fetch_race_weather(year: int, round_num: int,
 # MAIN INGESTION FUNCTION
 # =============================================================================
 
-def fetch_weather_data(bronze_dir:   Path,
+def fetch_weather_data(
+                       schedule_dir: Path,
+                       bronze_dir:   Path,
                        cache_dir:    Path,
                        start_year:   int,
                        end_year:     int,
@@ -308,7 +207,7 @@ def fetch_weather_data(bronze_dir:   Path,
         if single_round and single_year:
             rounds = [single_round]
         else:
-            rounds = get_season_rounds(year)
+            rounds = get_season_rounds(schedule_dir=schedule_dir, year=year)
 
         if not rounds:
             logging.warning(f"  No rounds found for {year} — skipping")
@@ -347,8 +246,8 @@ def fetch_weather_data(bronze_dir:   Path,
 
         # Pause between seasons
         if not single_year and year < end_year:
-            logging.info(f"  Pausing {INTER_SEASON_DELAY}s between seasons...")
-            time.sleep(INTER_SEASON_DELAY)
+            logging.info(f"  Pausing {config.INTER_SEASON_DELAY}s between seasons...")
+            time.sleep(config.INTER_SEASON_DELAY)
 
     # ── Update master file ────────────────────────────────────────────────
     logging.info("\n── Updating master file ─────────────────────")
@@ -386,29 +285,25 @@ def fetch_weather_data(bronze_dir:   Path,
         master.to_parquet(master_path, index=False, compression="snappy")
         logging.info(f"  Master updated — {len(master):,} total rows")
 
-    else:
-        logging.info("  No new races fetched — loading master from disk")
-        master = pd.read_parquet(master_path)
+    else: 
+        # ── No new data ───────────────────────────────────────────────────────
+        if not master_path.exists():
+            logging.warning("  No new data and no master file — returning empty | Set FORCE = True.")
+            return pd.DataFrame()
 
-    logging.info(f"\n{'='*50}")
-    logging.info(f"DONE — {len(master):,} total weather rows")
-    logging.info(f"{'='*50}")
+        logging.info("  No new seasons fetched — master unchanged, loading from disk")
+        master = pd.read_parquet(master_path)  
 
     return master
 
 
-# =============================================================================
-# CLI
-# =============================================================================
-
+# ── Run ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
 
-    BRONZE_DIR = Path(r'C:\Users\Asus\Desktop\Formula1\data\bronze')
-    CACHE_DIR  = Path(config.CACHE_DIR)
-
     df = fetch_weather_data(
-        bronze_dir   = BRONZE_DIR,
-        cache_dir    = CACHE_DIR,
+        schedule_dir = config.BRONZE_DIR / "schedule", 
+        bronze_dir   = config.BRONZE_DIR,
+        cache_dir    = config.CACHE_DIR,
         start_year   = config.START_YEAR,
         end_year     = config.END_YEAR,
         force        = config.FORCE,
@@ -420,4 +315,7 @@ if __name__ == "__main__":
     print(f"Seasons    : {sorted(df['season'].unique())}")
     print(f"Columns    : {list(df.columns)}")
     print(f"Wet races  : {df.drop_duplicates('round_number')['is_wet_session'].sum()}")
-    print(f"\nSample:\n{df.head()}")
+    
+    print("\nWEATHER DATA:")
+    logging.info(df.head())
+    print(df.head())

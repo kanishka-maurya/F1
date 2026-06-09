@@ -3,48 +3,52 @@ import requests
 from pathlib import Path
 from src.utils import config
 from src.utils.logger import logging
+from src.utils.utility import safe_get, build_session
 
 
-BASE_URL     = "https://api.jolpi.ca/ergast/f1"
-
-
+# BUILD SESSION
+SESSION = build_session()
 
 # =============================================================================
 # NEW DATA CHECKER — tells if new data added to api
 # =============================================================================
 
-
-def has_new_data(save_path: Path, endpoint: str) -> bool:
+def has_new_data(save_path: Path, endpoint: str, session: requests.Session, timeout: int) -> bool:
     """
     Hit the API with limit=1 just to get the total count.
     Compare against rows saved on disk.
     Returns True if API has more records than local file.
     """
+
     try:
-        url      = f"{BASE_URL}{endpoint}?limit=1&offset=0"
-        response = requests.get(url, timeout=15)
+        url      = f"{config.BASE_URL}{endpoint}?limit=1&offset=0"
+        response = safe_get(session=session, url=url, timeout=timeout)
         response.raise_for_status()
         api_total  = int(response.json()["MRData"]["total"])
         disk_total = len(pd.read_parquet(save_path))
 
-        if api_total != disk_total:
+        if api_total > disk_total:
             logging.info(f"  New data detected — API: {api_total}, disk: {disk_total}")
             return True
+
+        if api_total < disk_total:
+            logging.warning(f"  Disk has more rows ({disk_total}) than API ({api_total}) — investigate")
 
         logging.info(f"  No new data — {disk_total} records up to date")
         return False
 
     except Exception as e:
         logging.warning(f"  Could not check for new data: {e} — will re-fetch")
-        return True   
+        return True 
 
 
 # =============================================================================
-# GENERIC FETCH FUNCTION
+# FETCH FUNCTION
 # =============================================================================
-
 
 def fetch_entity(
+    session: requests.Session,
+    timeout: int,
     bronze_dir: Path,
     endpoint: str,
     table_key: str,
@@ -52,13 +56,15 @@ def fetch_entity(
     extract_fn,
     save_name: str,
     force: bool = False,
+   
     ) -> pd.DataFrame:
 
 
     """
-    Generic paginated fetch for any Jolpica entity.
  
     Parameters:
+        session     : Session object
+        timeout     : timeout of server
         bronze_dir  : Path to bronze folder
         endpoint    : API endpoint e.g. '/drivers.json'
         table_key   : JSON key for the table e.g. 'DriverTable'
@@ -68,14 +74,13 @@ def fetch_entity(
         force       : re-fetch even if file exists
     """
 
-
     bronze_dir = Path(bronze_dir)
     save_path  = bronze_dir / "entities" / save_name
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
     # ── Idempotency ───────────────────────────────────────────────────────
     if save_path.exists() and not force:
-        if not has_new_data(save_path, endpoint):
+        if not has_new_data(save_path, endpoint, session=session, timeout=timeout):
             return pd.read_parquet(save_path)
         logging.info(f"  Updating {save_name} with new records...")
 
@@ -86,9 +91,9 @@ def fetch_entity(
     offset      = 0
 
     while True:
-        url = f"{BASE_URL}{endpoint}?limit={limit}&offset={offset}"
+        url = f"{config.BASE_URL}{endpoint}?limit={limit}&offset={offset}"
         try:
-            response = requests.get(url, timeout=30)
+            response = safe_get(session=session, url=url, timeout=timeout)
             response.raise_for_status()
             data = response.json()
         except Exception as e:
@@ -120,7 +125,6 @@ def fetch_entity(
 # =============================================================================
 # EXTRACT FUNCTIONS — one per entity
 # =============================================================================
- 
 
 def extract_driver(d: dict) -> dict:
     return {
@@ -159,8 +163,7 @@ def extract_circuit(c: dict) -> dict:
 # MAIN — fetch all three entities
 # =============================================================================
  
-
-def fetch_all_entities(bronze_dir: Path, force: bool = False) -> dict:
+def fetch_all_entities(bronze_dir: Path, session: requests.Session, timeout: int, force: bool = False) -> dict:
     """
     Fetch drivers, constructors, and circuits.
     Returns a dict with all three DataFrames.
@@ -174,6 +177,8 @@ def fetch_all_entities(bronze_dir: Path, force: bool = False) -> dict:
     # ── Drivers ───────────────────────────────────────────────────────────
     logging.info("\n── Drivers ──────────────────────────────────")
     drivers = fetch_entity(
+        session    = session,
+        timeout    = timeout,
         bronze_dir = bronze_dir,
         endpoint   = "/drivers.json",
         table_key  = "DriverTable",
@@ -187,6 +192,8 @@ def fetch_all_entities(bronze_dir: Path, force: bool = False) -> dict:
     # ── Constructors ──────────────────────────────────────────────────────
     logging.info("\n── Constructors ─────────────────────────────")
     constructors = fetch_entity(
+        session    = session,
+        timeout    = timeout,
         bronze_dir = bronze_dir,
         endpoint   = "/constructors.json",
         table_key  = "ConstructorTable",
@@ -200,6 +207,8 @@ def fetch_all_entities(bronze_dir: Path, force: bool = False) -> dict:
     # ── Circuits ──────────────────────────────────────────────────────────
     logging.info("\n── Circuits ─────────────────────────────────")
     circuits = fetch_entity(
+        session    = session,
+        timeout    = timeout,
         bronze_dir = bronze_dir,
         endpoint   = "/circuits.json",
         table_key  = "CircuitTable",
@@ -227,9 +236,8 @@ def fetch_all_entities(bronze_dir: Path, force: bool = False) -> dict:
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    BRONZE_DIR = Path(r'C:\Users\Asus\Desktop\Formula1\data\bronze')
  
-    results = fetch_all_entities(bronze_dir=BRONZE_DIR, force=config.FORCE)
+    results = fetch_all_entities(bronze_dir=config.BRONZE_DIR, force=config.FORCE, session= SESSION, timeout=config.TIMEOUT)
  
     print("\nDrivers:")
     print(results["drivers"].head())

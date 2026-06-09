@@ -7,89 +7,14 @@ from src.utils import config
 from src.utils.logger import logging 
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from src.utils.utility import safe_get, build_session, get_season_rounds, parse_laptime_to_ms
 
-BASE_URL = "https://api.jolpi.ca/ergast/f1"
-RATE_LIMIT_DELAY = 1.0
-INTER_SEASON_DELAY = 3.0
-
-
-
-def _build_session() -> requests.Session:
-    """
-    Create a requests.Session with automatic retry + exponential backoff.
- 
-    Retry schedule with backoff_factor=2:
-        attempt 1 → wait  2 s
-        attempt 2 → wait  4 s
-        attempt 3 → wait  8 s
-        attempt 4 → wait 16 s
-        attempt 5 → wait 32 s
- 
-    respect_retry_after_header=True means that if the server sends a
-    'Retry-After' header we honour it instead of using our own schedule.
-    """
-    session = requests.Session()
-    retry = Retry(
-        total=5,
-        backoff_factor=2,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET"],
-        respect_retry_after_header=True,
-        raise_on_status=False,   # we call raise_for_status ourselves
-    )
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    return session
- 
- 
-SESSION = _build_session()
-
-
-# =============================================================================
-# HELPERS
-# =============================================================================
- 
-
-def _safe_get(url: str, timeout: int = 30) -> requests.Response:
-    """
-    GET with:
-      • a fixed inter-request delay (RATE_LIMIT_DELAY)
-      • the session's built-in retry / backoff
-      • a manual fallback for 429s that slip through (reads Retry-After)
- 
-    Raises requests.HTTPError on non-2xx after all retries are exhausted.
-    """
-    time.sleep(RATE_LIMIT_DELAY)
- 
-    while True:
-        response = SESSION.get(url, timeout=timeout)
- 
-        if response.status_code == 429:
-            # The urllib3 retry layer should have caught this, but handle it
-            # here as a belt-and-suspenders guard.
-            wait = int(response.headers.get("Retry-After", 10))
-            logging.warning(f"  429 received — waiting {wait}s before retry…")
-            time.sleep(wait)
-            continue  # retry immediately after the back-off window
- 
-        response.raise_for_status()
-        return response
-
-def get_season_rounds(year: int) -> list[int]:
-    """
-    Fetch list of round numbers for a given season from Jolpica.
-    Returns empty list if season not found.
-    """
-    url = f"{BASE_URL}/{year}/races.json?limit=30"
-    try:
-        response = _safe_get(url)
-        races = response.json()["MRData"]["RaceTable"]["Races"]
-        return [int(r["round"]) for r in races]
-    except Exception as e:
-        logging.error(f"  Could not fetch rounds for {year}: {e}")
-        return []
+# BUILD SESSION
+SESSION = build_session()
     
+# =============================================================================
+# EXTRACT
+# =============================================================================
 
 def extract_results(races: list, year: int, round_num: int) -> pd.DataFrame:
     """
@@ -169,9 +94,9 @@ def extract_results(races: list, year: int, round_num: int) -> pd.DataFrame:
  
 def fetch_round_results(year: int, round_num: int) -> pd.DataFrame:
     """Fetch results for a single race round."""
-    url = f"{BASE_URL}/{year}/{round_num}/results.json"
+    url = f"{config.BASE_URL}/{year}/{round_num}/results.json"
     try:
-        response = _safe_get(url)
+        response = safe_get(url)
         races = response.json()["MRData"]["RaceTable"]["Races"]
         return extract_results(races, year, round_num)
     except Exception as e:
@@ -182,12 +107,13 @@ def fetch_round_results(year: int, round_num: int) -> pd.DataFrame:
 # =============================================================================
 # MAIN INGESTION FUNCTION
 # =============================================================================
- 
 
-def fetch_race_results(bronze_dir: Path,
+def fetch_race_results(
+                       schedule_dir: Path,
+                       bronze_dir: Path,
                        start_year: int,
                        end_year:   int,
-                       force:      bool = False) -> pd.DataFrame:
+                       force:      bool) -> pd.DataFrame:
     """
     Fetch race results for all seasons and rounds.
     Saves one parquet per race and one combined master file.
@@ -212,7 +138,7 @@ def fetch_race_results(bronze_dir: Path,
         logging.info(f"\n── Season {year} ──────────────────────────────")
  
         # Fetch round list for this season
-        rounds = get_season_rounds(year)
+        rounds = get_season_rounds(schedule_dir=schedule_dir, year=year)
         if not rounds:
             logging.warning(f"  No rounds found for {year} — skipping")
             continue
@@ -276,29 +202,33 @@ def fetch_race_results(bronze_dir: Path,
         master.to_parquet(master_path, index=False, compression="snappy")
         logging.info(f"  Master updated — {len(master)} total rows")
  
-    else:
-        logging.info("  No new races fetched — loading master from disk")
+    else: 
+        # ── No new data ───────────────────────────────────────────────────────
+        if not master_path.exists():
+            logging.warning("  No new data and no master file — returning empty | Set FORCE = True.")
+            return pd.DataFrame()
+
+        logging.info("  No new rounds fetched — master unchanged, loading from disk")
         master = pd.read_parquet(master_path)
- 
-    logging.info(f"\n{'='*50}")
-    logging.info(f"DONE — {len(master)} total result rows")
-    logging.info(f"{'='*50}")
  
     return master
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
 
-    BRONZE_DIR = Path(r'C:\Users\Asus\Desktop\Formula1\data\bronze')
  
     df = fetch_race_results(
-        bronze_dir = BRONZE_DIR,
-        start_year = config.START_YEAR,
-        end_year   = config.END_YEAR,
-        force      = config.FORCE,
+        schedule_dir = config.BRONZE_DIR / "schedule", 
+        bronze_dir   = config.BRONZE_DIR,
+        start_year   = config.START_YEAR,
+        end_year     = config.END_YEAR,
+        force        = config.FORCE,
     )
  
     print(f"\nShape       : {df.shape}")
     print(f"Seasons     : {sorted(df['season'].unique())}")
     print(f"Winners     : {df[df['is_winner']]['driver_ref'].value_counts().head()}")
-    print(f"\nSample:\n{df.head()}")
+    
+    print("\nRACE RESULTS DATA:")
+    logging.info(df.head())
+    print(df.head())
