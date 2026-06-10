@@ -1,4 +1,5 @@
 from pathlib import Path
+import os 
 from src.utils import config
 from src.utils.logger import logging
 from src.utils.utility import build_session
@@ -10,6 +11,9 @@ from src.ingestion.ingest_results import fetch_race_results
 from src.ingestion.ingest_schedule import fetch_race_schedule
 from src.ingestion.ingest_telemetry import fetch_telemetry
 from src.ingestion.ingest_weather import fetch_weather_data
+
+
+os.makedirs(config.DATA_DIR, exist_ok=True)
 
 # BUILD SESSION
 SESSION = build_session()

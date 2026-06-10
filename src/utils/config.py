@@ -14,3 +14,4 @@ RATE_LIMIT_DELAY  = 1.0   # seconds between every API call
 BRONZE_DIR = Path(r'C:\Users\Asus\Desktop\Formula1\data\bronze')
 PAGE_LIMIT = 100 # used in ingest_laps
 PIT_DATA_START_YEAR  = 2018 # used in ingest_pitstop
+DATA_DIR = Path(r"C:\Users\Asus\Desktop\Formula1\data")
