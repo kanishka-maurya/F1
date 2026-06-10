@@ -125,7 +125,7 @@ def fetch_race_weather(session: requests.Session, year: int, round_num: int,
         DataFrame with weather readings or empty DataFrame if unavailable
     """
     try:
-        session = fastf1.get_session(year, round_num, "R")
+        session = fastf1.get_session(year, round_num, "Q")
 
         # Load only weather — skip laps, telemetry, messages 
         session.load(
