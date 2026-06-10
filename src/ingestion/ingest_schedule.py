@@ -9,14 +9,15 @@ from urllib3.util.retry import Retry
 import time
 from src.utils.utility import safe_get, build_session
 
-# BUILD SESSION
-SESSION = build_session()
  
 # =============================================================================
 # EXTRACT
 # =============================================================================
 
-def fetch_race_schedule(bronze_dir: Path,
+def fetch_race_schedule(
+                        session: requests.Session,
+                        timeout: int, 
+                        bronze_dir: Path,
                         start_year: int,
                         end_year: int,
                         force: bool) -> pd.DataFrame:
@@ -43,7 +44,7 @@ def fetch_race_schedule(bronze_dir: Path,
         logging.info(f"  Fetching {year} schedule...")
         try:
             url      = f"{config.BASE_URL}/{year}/races.json?limit=30"
-            response = safe_get(url)
+            response = safe_get(session=session, url=url, timeout=timeout)
             races    = response.json()["MRData"]["RaceTable"]["Races"]
         except Exception as e:
             logging.error(f"  Failed to fetch {year}: {e}")
@@ -132,8 +133,17 @@ def fetch_race_schedule(bronze_dir: Path,
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
- 
-    results = fetch_race_schedule(bronze_dir=config.BRONZE_DIR, start_year=config.START_YEAR, end_year=config.END_YEAR, force=config.FORCE)
+    # BUILD SESSION
+    SESSION = build_session()
+
+    results = fetch_race_schedule(
+                        session     = SESSION,
+                        timeout     = config.TIMEOUT,
+                        bronze_dir  = config.BRONZE_DIR, 
+                        start_year  = config.START_YEAR, 
+                        end_year    = config.END_YEAR, 
+                        force       = config.FORCE
+                        )
  
     print("\nRACE SCHEDULE DATA:")
     logging.info(results.head())

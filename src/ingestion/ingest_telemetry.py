@@ -1,5 +1,6 @@
 import datetime
 import time
+import requests
 import warnings
 import fastf1
 import pandas as pd
@@ -10,8 +11,7 @@ from src.utils.logger import logging
 from src.utils.utility import safe_get, build_session, get_season_rounds, parse_laptime_to_ms, get_race_info_from_disk
 
 
-# HELPER
-
+# HELPERS
 def safe_mean(series) -> float | None:
     """Mean ignoring NaN. Returns None if all values are NaN."""
     try:
@@ -174,7 +174,7 @@ def aggregate_lap_telemetry(car_data: pd.DataFrame,
 # EXTRACT TELEMETRY FOR ONE RACE
 # =============================================================================
 
-def extract_race_telemetry(session,
+def extract_race_telemetry(session: requests.Session,
                            year: int,
                            round_num: int,
                            race_info: dict) -> pd.DataFrame:
@@ -302,7 +302,10 @@ def extract_race_telemetry(session,
 # SINGLE RACE TELEMETRY FETCH
 # =============================================================================
 
-def fetch_race_telemetry(year: int, round_num: int,
+def fetch_race_telemetry(session: requests.Session,
+                         timeout: int,
+                         year: int, 
+                         round_num: int,
                          cache_dir: Path,
                          schedule_dir: Path) -> pd.DataFrame:
     """
@@ -314,7 +317,7 @@ def fetch_race_telemetry(year: int, round_num: int,
         weather=False  → not needed here
         messages=False → not needed here
     """
-    race_info = get_race_info_from_disk(schedule_dir, year, round_num)
+    race_info = get_race_info_from_disk(session=session, schedule_dir=schedule_dir, year=year, round_num=round_num, timeout=timeout)
 
     try:
         logging.info(f"  Loading FastF1 session {year} R{round_num:02d}...")
@@ -340,7 +343,8 @@ def fetch_race_telemetry(year: int, round_num: int,
 # MAIN INGESTION FUNCTION
 # =============================================================================
 
-def fetch_telemetry(
+def fetch_telemetry(session: requests.Session,
+                    timeout: int,
                     schedule_dir: Path,
                     bronze_dir:   Path,
                     cache_dir:    Path,
@@ -418,7 +422,7 @@ def fetch_telemetry(
             logging.info(f"  Fetching {year} R{round_num:02d} telemetry...")
             try:
                 df_round = fetch_race_telemetry(
-                    year, round_num, cache_dir, schedule_dir
+                    session=session, year=year, round_num=round_num, cache_dir=cache_dir, schedule_dir=schedule_dir, timeout=timeout
                 )
             except Exception as e:
                 logging.error(
@@ -492,8 +496,12 @@ def fetch_telemetry(
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-
+    # BUILD SESSION
+    SESSION = build_session()
+    
     df = fetch_telemetry(
+        session      = SESSION,
+        timeout      = config.TIMEOUT,
         schedule_dir = config.BRONZE_DIR / "schedule",
         bronze_dir   = config.BRONZE_DIR,
         cache_dir    = config.CACHE_DIR,

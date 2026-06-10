@@ -12,8 +12,6 @@ from src.utils import config
 from src.utils.logger import logging
 from src.utils.utility import safe_get, build_session, get_season_rounds, parse_laptime_to_ms, timedelta_to_ms
 
-# BUILD SESSION
-SESSION = build_session()
 
 # =============================================================================
 # EXTRACT — weather from FastF1 session
@@ -110,7 +108,7 @@ def extract_weather(session, year: int,
 # SINGLE RACE WEATHER FETCH
 # =============================================================================
 
-def fetch_race_weather(year: int, round_num: int,
+def fetch_race_weather(session: requests.Session, year: int, round_num: int,
                        cache_dir: Path) -> pd.DataFrame:
     """
     Load FastF1 race session for one round and extract weather data.
@@ -140,7 +138,7 @@ def fetch_race_weather(year: int, round_num: int,
         race_name   = session.event.get("EventName", f"Round {round_num}")
         circuit_ref = session.event.get("Location",  "unknown")
 
-        return extract_weather(session, year, round_num, race_name, circuit_ref)
+        return extract_weather(session=session, year=year, round_num=round_num, race_name=race_name, circuit_ref=circuit_ref)
 
     except Exception as e:
         logging.error(f"  FastF1 load failed for {year} R{round_num:02d}: {e}")
@@ -151,7 +149,7 @@ def fetch_race_weather(year: int, round_num: int,
 # MAIN INGESTION FUNCTION
 # =============================================================================
 
-def fetch_weather_data(
+def fetch_weather_data(session: requests.Session,
                        schedule_dir: Path,
                        bronze_dir:   Path,
                        cache_dir:    Path,
@@ -226,7 +224,7 @@ def fetch_weather_data(
 
             # ── Fetch ─────────────────────────────────────────────────────
             logging.info(f"  Fetching {year} R{round_num:02d} weather...")
-            df_round = fetch_race_weather(year, round_num, cache_dir)
+            df_round = fetch_race_weather(session=session, year=year, round_num=round_num, cache_dir=cache_dir)
 
             if df_round.empty:
                 logging.warning(
@@ -299,8 +297,11 @@ def fetch_weather_data(
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    # BUILD SESSION
+    SESSION = build_session()
 
     df = fetch_weather_data(
+        session      = SESSION,
         schedule_dir = config.BRONZE_DIR / "schedule", 
         bronze_dir   = config.BRONZE_DIR,
         cache_dir    = config.CACHE_DIR,

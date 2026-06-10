@@ -7,29 +7,14 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from src.utils import config
 from src.utils.logger import logging
-from src.utils.utility import safe_get, build_session, get_season_rounds, parse_laptime_to_ms
-
-# BUILD SESSION
-SESSION = build_session()
-
-
-def get_season_rounds_from_api(year: int) -> list[int]:
-    """Fetch round numbers from Jolpica API (fallback only)."""
-    url = f"{config.BASE_URL}/{year}/races.json?limit=30"
-    try:
-        response = safe_get(url)
-        races    = response.json()["MRData"]["RaceTable"]["Races"]
-        return [int(r["round"]) for r in races]
-    except Exception as e:
-        logging.error(f"  Could not fetch rounds for {year}: {e}")
-        return []
+from src.utils.utility import safe_get, build_session, get_season_rounds, parse_laptime_to_ms, get_race_info_from_disk
 
 
 # =============================================================================
 # FETCH ALL PAGES FOR ONE RACE
 # =============================================================================
 
-def fetch_all_pitstop_pages(year: int, round_num: int) -> list[dict]:
+def fetch_all_pitstop_pages(session: requests.Session, year: int, round_num: int, timeout: int) -> list[dict]:
     """
     Fetch all paginated pit stop data for a single race.
 
@@ -46,7 +31,7 @@ def fetch_all_pitstop_pages(year: int, round_num: int) -> list[dict]:
         url = (f"{config.BASE_URL}/{year}/{round_num}/pitstops.json"
                f"?limit={config.PAGE_LIMIT}&offset={offset}")
         try:
-            response = safe_get(url)
+            response = safe_get(session=session, url=url, timeout=timeout)
             data     = response.json()["MRData"]
             total    = int(data["total"])
             races    = data["RaceTable"]["Races"]
@@ -162,64 +147,17 @@ def extract_pitstops(all_pitstops: list[dict], year: int,
 
     return df
 
-
-def get_race_info(year: int, round_num: int) -> dict:
-    """Fetch basic race metadata for context columns."""
-    schedule_path = None  # will use API fallback
-    url = f"{config.BASE_URL}/{year}/{round_num}/races.json"
-    try:
-        response = safe_get(url)
-        races    = response.json()["MRData"]["RaceTable"]["Races"]
-        if not races:
-            return {}
-        race = races[0]
-        return {
-            "race_name":   race.get("raceName"),
-            "circuit_ref": race.get("Circuit", {}).get("circuitId"),
-            "race_date":   race.get("date"),
-        }
-    except Exception as e:
-        logging.warning(f"  Could not fetch race info {year} R{round_num}: {e}")
-        return {}
-
-
-def get_race_info_from_disk(schedule_dir: Path,
-                            year: int, round_num: int) -> dict:
-    """
-    Read race metadata from saved schedule parquet — zero API calls.
-    Falls back to API if schedule not found.
-    """
-    schedule_path = schedule_dir / f"{year}_schedule.parquet"
-
-    if schedule_path.exists():
-        df   = pd.read_parquet(schedule_path)
-        race = df[df["round_number"] == round_num]
-        if not race.empty:
-            row = race.iloc[0]
-            return {
-                "race_name":   row.get("race_name"),
-                "circuit_ref": row.get("circuit_ref"),
-                "race_date":   str(row.get("race_date", "")),
-            }
-
-    # Fallback to API
-    logging.warning(
-        f"  Schedule not on disk for {year} R{round_num} — fetching race info from API"
-    )
-    return get_race_info(year, round_num)
-
-
 # =============================================================================
 # SINGLE RACE PIT STOP FETCH
 # =============================================================================
 
-def fetch_race_pitstops(year: int, round_num: int,
+def fetch_race_pitstops(session: requests.Session, timeout: int, year: int, round_num: int,
                         schedule_dir: Path) -> pd.DataFrame:
     """
     Fetch and extract all pit stop data for one race.
     """
-    race_info    = get_race_info_from_disk(schedule_dir, year, round_num)
-    all_pitstops = fetch_all_pitstop_pages(year, round_num)
+    race_info    = get_race_info_from_disk(session=session, schedule_dir=schedule_dir, year=year, round_num=round_num, timeout=timeout)
+    all_pitstops = fetch_all_pitstop_pages(session=session, year=year, round=round_num, timeout=timeout)
 
     if not all_pitstops:
         return pd.DataFrame()
@@ -237,10 +175,12 @@ def fetch_race_pitstops(year: int, round_num: int,
 # =============================================================================
 
 def fetch_pit_stops(
+                    session: requests.Session,
                     schedule_dir: Path,
                     bronze_dir:   Path,
                     start_year:   int,
                     end_year:     int,
+                    timeout: int,
                     force:        bool = False,
                     single_year:  int  = None,
                     single_round: int  = None) -> pd.DataFrame:
@@ -306,7 +246,7 @@ def fetch_pit_stops(
             # ── Fetch ─────────────────────────────────────────────────────
             logging.info(f"  Fetching {year} R{round_num:02d} pit stops...")
             try:
-                df_round = fetch_race_pitstops(year, round_num, schedule_dir)
+                df_round = fetch_race_pitstops(session=session, timeout=timeout, year=year, round_num=round_num, schedule_dir=schedule_dir)
             except Exception as e:
                 logging.error(
                     f"  Failed {year} R{round_num:02d}: {e} — skipping"
@@ -383,13 +323,16 @@ def fetch_pit_stops(
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-
+    # BUILD SESSION
+    SESSION = build_session()
 
     df = fetch_pit_stops(
+        session      = SESSION,
         schedule_dir = config.BRONZE_DIR / "schedule", 
         bronze_dir   = config.BRONZE_DIR,
         start_year   = config.START_YEAR,
         end_year     = config.END_YEAR,
+        timeout      = config.TIMEOUT,
         force        = config.FORCE,
         single_year  = config.YEAR,
         single_round = config.ROUND,

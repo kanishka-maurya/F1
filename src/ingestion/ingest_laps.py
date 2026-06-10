@@ -8,16 +8,14 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from src.utils import config
 from src.utils.logger import logging
-from src.utils.utility import safe_get, build_session, get_season_rounds, parse_laptime_to_ms
+from src.utils.utility import safe_get, build_session, get_season_rounds, parse_laptime_to_ms, get_race_info_from_disk
 
-# BUILD SESSION
-SESSION = build_session()
 
 # =============================================================================
 # FETCH ALL PAGES FOR ONE RACE
 # =============================================================================
 
-def fetch_all_lap_pages(year: int, round_num: int) -> list[dict]:
+def fetch_all_lap_pages(session: requests.Session, year: int, round_num: int, timeout: int) -> list[dict]:
     """
     Fetch all paginated lap data for a single race.
 
@@ -39,7 +37,7 @@ def fetch_all_lap_pages(year: int, round_num: int) -> list[dict]:
         url = (f"{config.BASE_URL}/{year}/{round_num}/laps.json"
                f"?limit={config.PAGE_LIMIT}&offset={offset}")
         try:
-            response = safe_get(url)
+            response = safe_get(session=session, url=url, timeout=timeout)
             data     = response.json()["MRData"]
             total    = int(data["total"])
             races    = data["RaceTable"]["Races"]
@@ -138,37 +136,16 @@ def extract_laps(all_laps: list[dict], year: int,
     return df
 
 
-def get_race_info(year: int, round_num: int) -> dict:
-    """
-    Fetch basic race metadata (name, circuit, date) for context columns.
-    """
-    url = f"{config.BASE_URL}/{year}/{round_num}/races.json"
-    try:
-        response = safe_get(url)
-        races    = response.json()["MRData"]["RaceTable"]["Races"]
-        if not races:
-            return {}
-        race = races[0]
-        return {
-            "race_name":   race.get("raceName"),
-            "circuit_ref": race.get("Circuit", {}).get("circuitId"),
-            "race_date":   race.get("date"),
-        }
-    except Exception as e:
-        logging.warning(f"  Could not fetch race info for {year} R{round_num}: {e}")
-        return {}
-
-
 # =============================================================================
 # SINGLE RACE INGESTION
 # =============================================================================
 
-def fetch_race_laps(year: int, round_num: int) -> pd.DataFrame:
+def fetch_race_laps(session: requests.Session, schedule_dir: Path, year: int, round_num: int, timeout: int) -> pd.DataFrame:
     """
     Fetch, flatten, and return all lap data for one race.
     """
-    race_info = get_race_info(year, round_num)
-    all_laps  = fetch_all_lap_pages(year, round_num)
+    race_info = get_race_info_from_disk(session=session, timeout=timeout, schedule_dir=schedule_dir, year=year, round_num=round_num)
+    all_laps  = fetch_all_lap_pages(session=session, year=year, round_num=round_num, timeout=timeout)
 
     if not all_laps:
         return pd.DataFrame()
@@ -186,13 +163,16 @@ def fetch_race_laps(year: int, round_num: int) -> pd.DataFrame:
 # =============================================================================
 
 def fetch_lap_data(
+                   session: requests.Session,
                    schedule_dir: Path,
                    bronze_dir:  Path,
                    start_year:  int,
                    end_year:    int,
+                   timeout: int,
                    force:       bool = False,
                    single_year: int  = None,
-                   single_round: int = None) -> pd.DataFrame:
+                   single_round: int = None
+                   ) -> pd.DataFrame:
     """
     Fetch lap data for all seasons and rounds.
     Saves one parquet per race and one combined master file.
@@ -248,7 +228,7 @@ def fetch_lap_data(
             # ── Fetch ─────────────────────────────────────────────────────
             logging.info(f"  Fetching {year} R{round_num:02d} laps...")
             try:
-                df_round = fetch_race_laps(year, round_num)
+                df_round = fetch_race_laps(session=session, schedule_dir=schedule_dir, year=year, round_num=round_num, timeout=timeout)
             except Exception as e:
                 logging.error(
                     f"  Failed {year} R{round_num:02d}: {e} — skipping"
@@ -325,12 +305,16 @@ def fetch_lap_data(
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    # BUILD SESSION
+    SESSION = build_session() 
 
     df = fetch_lap_data(
+        session      = SESSION,
         schedule_dir = config.BRONZE_DIR / "schedule",
         bronze_dir   = config.BRONZE_DIR,
         start_year   = config.START_YEAR,
         end_year     = config.END_YEAR,
+        timeout      = config.TIMEOUT,
         force        = config.FORCE,
         single_year  = config.YEAR,
         single_round = config.ROUND,

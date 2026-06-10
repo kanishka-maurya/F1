@@ -9,9 +9,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from src.utils.utility import safe_get, build_session, get_season_rounds, parse_laptime_to_ms
 
-# BUILD SESSION
-SESSION = build_session()
-    
+
 # =============================================================================
 # EXTRACT
 # =============================================================================
@@ -92,11 +90,11 @@ def extract_results(races: list, year: int, round_num: int) -> pd.DataFrame:
     return df
  
  
-def fetch_round_results(year: int, round_num: int) -> pd.DataFrame:
+def fetch_round_results(session: requests.Session, timeout: int, year: int, round_num: int) -> pd.DataFrame:
     """Fetch results for a single race round."""
     url = f"{config.BASE_URL}/{year}/{round_num}/results.json"
     try:
-        response = safe_get(url)
+        response = safe_get(session=session, url=url, timeout=timeout)
         races = response.json()["MRData"]["RaceTable"]["Races"]
         return extract_results(races, year, round_num)
     except Exception as e:
@@ -109,10 +107,12 @@ def fetch_round_results(year: int, round_num: int) -> pd.DataFrame:
 # =============================================================================
 
 def fetch_race_results(
+                       session: requests.Session, 
                        schedule_dir: Path,
                        bronze_dir: Path,
                        start_year: int,
                        end_year:   int,
+                       timeout: int, 
                        force:      bool) -> pd.DataFrame:
     """
     Fetch race results for all seasons and rounds.
@@ -155,7 +155,7 @@ def fetch_race_results(
  
             # ── Fetch this round ──────────────────────────────────────────
             logging.info(f"  Fetching {year} R{round_num:02d}...")
-            df_round = fetch_round_results(year, round_num)
+            df_round = fetch_round_results(session=session, year=year, round_num=round_num, timeout=timeout)
  
             if df_round.empty:
                 logging.warning(f"  No data for {year} R{round_num:02d} — skipping")
@@ -215,13 +215,17 @@ def fetch_race_results(
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    # BUILD SESSION
+    SESSION = build_session()
 
  
     df = fetch_race_results(
+        session      = SESSION,
         schedule_dir = config.BRONZE_DIR / "schedule", 
         bronze_dir   = config.BRONZE_DIR,
         start_year   = config.START_YEAR,
         end_year     = config.END_YEAR,
+        timeout      = config.TIMEOUT,
         force        = config.FORCE,
     )
  

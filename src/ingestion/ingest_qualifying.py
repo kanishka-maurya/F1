@@ -10,9 +10,6 @@ from src.utils import config
 from src.utils.utility import safe_get, build_session, get_season_rounds, parse_laptime_to_ms
 
 
-# BUILD SESSION
-SESSION = build_session()
-
 # =============================================================================
 # EXTRACT
 # =============================================================================
@@ -97,13 +94,13 @@ def extract_qualifying(races: list, year: int, round_num: int) -> pd.DataFrame:
     return df
 
 
-def fetch_round_qualifying(year: int, round_num: int) -> pd.DataFrame:
+def fetch_round_qualifying(session: requests.Session, timeout: int, year: int, round_num: int) -> pd.DataFrame:
 
     """Fetch qualifying results for a single race round."""
 
     url = f"{config.BASE_URL}/{year}/{round_num}/qualifying.json"
     try:
-        response = safe_get(url)
+        response = safe_get(session=session, url=url, timeout=timeout)
         races    = response.json()["MRData"]["RaceTable"]["Races"]
         return extract_qualifying(races, year, round_num)
     
@@ -117,10 +114,12 @@ def fetch_round_qualifying(year: int, round_num: int) -> pd.DataFrame:
 # =============================================================================
 
 def fetch_qualifying_results(
+                            session: requests.Session,
                             schedule_dir: Path,
                             bronze_dir: Path,
                             start_year: int,
                             end_year:   int,
+                            timeout: int,
                             force:      bool = False) -> pd.DataFrame:
     """
     Fetch qualifying results for all seasons and rounds.
@@ -163,7 +162,7 @@ def fetch_qualifying_results(
 
             # ── Fetch ─────────────────────────────────────────────────────
             logging.info(f"  Fetching {year} R{round_num:02d} qualifying...")
-            df_round = fetch_round_qualifying(year, round_num)
+            df_round = fetch_round_qualifying(session=session, year=year, round_num=round_num, timeout=timeout)
 
             if df_round.empty:
                 logging.warning(f"  No data for {year} R{round_num:02d} — skipping")
@@ -233,13 +232,16 @@ def fetch_qualifying_results(
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-
+    # BUILD SESSION
+    SESSION = build_session()
 
     df = fetch_qualifying_results(
+        session      = SESSION,
         schedule_dir = config.BRONZE_DIR / "schedule", 
         bronze_dir   = config.BRONZE_DIR,
         start_year   = config.START_YEAR,
         end_year     = config.END_YEAR,
+        timeout      = config.TIMEOUT,
         force        = config.FORCE,
     )
 

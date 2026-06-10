@@ -6,9 +6,6 @@ from src.utils.logger import logging
 from src.utils.utility import safe_get, build_session
 
 
-# BUILD SESSION
-SESSION = build_session()
-
 # =============================================================================
 # NEW DATA CHECKER — tells if new data added to api
 # =============================================================================
@@ -236,8 +233,14 @@ def fetch_all_entities(bronze_dir: Path, session: requests.Session, timeout: int
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
- 
-    results = fetch_all_entities(bronze_dir=config.BRONZE_DIR, force=config.FORCE, session= SESSION, timeout=config.TIMEOUT)
+    # BUILD SESSION
+    SESSION = build_session()
+
+    results = fetch_all_entities(
+                                bronze_dir=config.BRONZE_DIR,
+                                force=config.FORCE,
+                                session= SESSION,
+                                timeout=config.TIMEOUT)
  
     print("\nDrivers:")
     print(results["drivers"].head())

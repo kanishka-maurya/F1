@@ -137,10 +137,14 @@ def timedelta_to_ms(td) -> float | None:
 
 
 
-def get_race_info_from_disk(schedule_dir: Path,
+def get_race_info_from_disk(session: requests.Session, timeout: int, schedule_dir: Path,
                             year: int, round_num: int) -> dict:
-    """Read race name and circuit from saved schedule parquet."""
+    """
+    Read race metadata from saved schedule parquet — zero API calls.
+    Falls back to API if schedule not found.
+    """
     schedule_path = schedule_dir / f"{year}_schedule.parquet"
+
     if schedule_path.exists():
         df   = pd.read_parquet(schedule_path)
         race = df[df["round_number"] == round_num]
@@ -151,4 +155,33 @@ def get_race_info_from_disk(schedule_dir: Path,
                 "circuit_ref": row.get("circuit_ref"),
                 "race_date":   str(row.get("race_date", "")),
             }
-    return {}
+
+    # Fallback to API
+    logging.warning(
+        f"  Schedule not on disk for {year} R{round_num} — fetching race info from API"
+    )
+    return get_race_info_from_api(session=session, year=year, round_num=round_num, timeout=timeout)
+
+
+
+
+
+
+def get_race_info_from_api(session: requests.Session, timeout: int, year: int, round_num: int) -> dict:
+    """Fetch basic race metadata for context columns."""
+    schedule_path = None  # will use API fallback
+    url = f"{config.BASE_URL}/{year}/{round_num}/races.json"
+    try:
+        response = safe_get(session=session, url=url, timeout=timeout)
+        races    = response.json()["MRData"]["RaceTable"]["Races"]
+        if not races:
+            return {}
+        race = races[0]
+        return {
+            "race_name":   race.get("raceName"),
+            "circuit_ref": race.get("Circuit", {}).get("circuitId"),
+            "race_date":   race.get("date"),
+        }
+    except Exception as e:
+        logging.warning(f"  Could not fetch race info {year} R{round_num}: {e}")
+        return {}
