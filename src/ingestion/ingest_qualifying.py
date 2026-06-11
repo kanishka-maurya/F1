@@ -18,11 +18,6 @@ def extract_qualifying(races: list, year: int, round_num: int) -> pd.DataFrame:
     """
     Extract and flatten qualifying results from API response.
     One row per driver per qualifying session.
-
-    Computes:
-        - best_quali_time_ms  : best of Q1/Q2/Q3 in milliseconds
-        - gap_to_pole_ms      : delta to fastest qualifier
-        - made_q2, made_q3    : boolean flags for session progression
     """
     if not races:
         return pd.DataFrame()
@@ -37,10 +32,6 @@ def extract_qualifying(races: list, year: int, round_num: int) -> pd.DataFrame:
         q1_str = r.get("Q1", None)
         q2_str = r.get("Q2", None)
         q3_str = r.get("Q3", None)
-
-        q1_ms  = parse_laptime_to_ms(q1_str)
-        q2_ms  = parse_laptime_to_ms(q2_str)
-        q3_ms  = parse_laptime_to_ms(q3_str)
 
         records.append({
             # Race context
@@ -64,12 +55,7 @@ def extract_qualifying(races: list, year: int, round_num: int) -> pd.DataFrame:
             # Raw lap time strings — kept for reference
             "q1_time":           q1_str,
             "q2_time":           q2_str,
-            "q3_time":           q3_str,
-
-            # Lap times in milliseconds — used for ML features
-            "q1_time_ms":        q1_ms,
-            "q2_time_ms":        q2_ms,
-            "q3_time_ms":        q3_ms,
+            "q3_time":           q3_str
         })
 
     if not records:
@@ -81,15 +67,6 @@ def extract_qualifying(races: list, year: int, round_num: int) -> pd.DataFrame:
     df["quali_position"] = pd.to_numeric(df["quali_position"], errors="coerce")
     df["driver_number"]  = pd.to_numeric(df["driver_number"],  errors="coerce")
     df["race_date"]      = pd.to_datetime(df["race_date"], errors="coerce").dt.date
-
-    # ── Best quali time  ──────────────────────────────────────────────────
-    df["best_quali_time_ms"] = df["q3_time_ms"].fillna(df["q2_time_ms"]).fillna(df["q1_time_ms"])
-    df["gap_to_pole"]= df["best_quali_time_ms"] - df["best_quali_time_ms"].min()
-       
-
-    # ── Session progression flags ─────────────────────────────────────────
-    df["made_q2"] = df["q2_time_ms"].notna()
-    df["made_q3"] = df["q3_time_ms"].notna()
 
     return df
 
