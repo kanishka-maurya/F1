@@ -139,7 +139,7 @@ def aggregate_lap_telemetry(car_data: pd.DataFrame,
         return {
             "driver_code":        driver_code,
             "lap_number":         lap_number,
-            "sample_count":       len(car_data),      # how many raw samples this lap
+            "sample_count":       len(car_data),      
 
             # Speed
             "avg_speed_kph":      avg_speed_kph,
@@ -177,7 +177,9 @@ def aggregate_lap_telemetry(car_data: pd.DataFrame,
 def extract_race_telemetry(session: requests.Session,
                            year: int,
                            round_num: int,
-                           race_info: dict) -> pd.DataFrame:
+                           race_info: dict,
+                           driver_number_map: dict
+                           ) -> pd.DataFrame:
     """
     Loop through every driver and every lap, fetch car telemetry,
     aggregate to one row per lap per driver.
@@ -266,6 +268,8 @@ def extract_race_telemetry(session: requests.Session,
             record["race_name"]    = race_info.get("race_name")
             record["circuit_ref"]  = race_info.get("circuit_ref")
             record["race_date"]    = race_info.get("race_date")
+            record["driver_number"] = safe_int(                        
+                driver_number_map.get(driver_code))
 
             all_records.append(record)
 
@@ -280,7 +284,7 @@ def extract_race_telemetry(session: requests.Session,
     # ── Column order ──────────────────────────────────────────────────────
     col_order = [
         "season", "round_number", "race_name", "circuit_ref", "race_date",
-        "driver_code", "lap_number", "sample_count",
+        "driver_code", "driver_number", "lap_number", "sample_count",
         "avg_speed_kph", "max_speed_kph", "min_speed_kph",
         "avg_throttle_pct", "full_throttle_pct",
         "heavy_braking_pct",
@@ -321,14 +325,22 @@ def fetch_race_telemetry(session: requests.Session,
 
     try:
         logging.info(f"  Loading FastF1 session {year} R{round_num:02d}...")
-        session = fastf1.get_session(year, round_num, "R")
-        session.load(
+        fastf1_session = fastf1.get_session(year, round_num, "Q")
+        fastf1_session.load(
             laps      = True,
-            telemetry = True,    # must be True for get_car_data()
+            telemetry = True,  
             weather   = False,
             messages  = False,
         )
         logging.info(f"  Session loaded ✓")
+
+        # Build driver_number_map from laps
+        driver_number_map = (
+            fastf1_session.laps[["Driver", "DriverNumber"]]
+            .drop_duplicates()
+            .set_index("Driver")["DriverNumber"]
+            .to_dict()
+        )  
 
     except Exception as e:
         logging.error(
@@ -336,7 +348,7 @@ def fetch_race_telemetry(session: requests.Session,
         )
         return pd.DataFrame()
 
-    return extract_race_telemetry(session, year, round_num, race_info)
+    return extract_race_telemetry(fastf1_session, year, round_num, race_info, driver_number_map)
 
 
 # =============================================================================
