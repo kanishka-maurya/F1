@@ -141,7 +141,6 @@ Usage:
 
 # ------------------------------------------------------------ ingest_telemetry ------------------------------------------------------------
 
-
 """
 Telemetry Ingestion — FastF1 → Bronze Parquet
 =============================================
@@ -174,3 +173,24 @@ Output:
     ├── 2025_R24_telemetry.parquet
     └── all_seasons_telemetry.parquet  ← combined master (~408,000 rows)
 """
+
+
+
+
+
+
+
+---------------------------------------------------------------------------------------------------------------------------------
+
+
+
+
+
+Confirmed — Grosjean's Baku 2018 row checks out perfectly. Grosjean could not set a qualifying time and was also slapped with a five-place penalty for a gearbox change. That's exactly why your row shows P20 with every time field NaN — it's not a scraping bug, it's a genuine "no time set" qualifying result, likely due to a gearbox/grid penalty situation rather than a crash in that specific session. sportskeeda
+Let me check the others.Searched the webSearched the webConfirmed and explains it perfectly. Verstappen crashed in FP3 at the Swimming Pool chicane, breaking the front suspension, and the damage left Red Bull with an extensive repair job ahead of qualifying including fitting a new gearbox. The team was unable to fix the car in time for Q1, meaning he failed to set a time, which is exactly why your row shows P20 with every quali time field as NaN. ESPNESPN
+Let me check the remaining three.Searched the webSearched the webConfirmed again. Brendon Hartley finished 20th in Spain qualifying and did not set a time, due to a heavy crash in FP3 that left his car unrepairable in time for the session. Crash.netSearched the webSearched the webFound it — different cause this time, not a crash. In Q1 of the 2018 Canadian Grand Prix, Haas driver Romain Grosjean experienced a catastrophic engine failure due to an oil leak in the power unit moments after rolling out of the pits, preventing him from posting a lap time. Confirmed by another source: as Grosjean pulled his Haas out of the garage to head out behind his teammate, his Ferrari engine expired in a plume of white smoke, and he coasted to a stop at the end of the pits. GrokipediaFormula 1 Wiki
+Now the last one — Stroll at the 2018 British GP.Searched the webSearched the webThat search mostly surfaced later seasons (Stroll's later career is full of qualifying crashes — Singapore 2023, Dutch GP 2025, etc., not the 2018 British GP we need). Let me search more specifically.Searched the webSearched the webFound it — confirmed for Williams, 2018 British GP at Silverstone. During qualifying at Silverstone, both Williams cars slid into the gravel; Lance Stroll was the first, spinning off at the end of the Wellington Straight and beaching his FW41 in the gravel, which forced a red flag and left him without a recorded time in the session. An aerodynamic stability issue was later identified as the underlying cause. Formula 1Formula 1
+
+Summary — every row checks out
+All five rows are genuine, correct "no time set" qualifying results, not pipeline bugs. Each driver suffered a session-ending incident before posting a lap:
+RowDriverRaceCauseGrosjeanBaku 2018Q1, gearbox failure → no time set (penalty applied separately; the crash referenced in your sources was actually in the race, not quali)HartleySpain 2018Heavy crash at Turn 9 in FP3, car too damaged to repair in time for Q1VerstappenMonaco 2018Heavy crash in FP3 at Swimming Pool chicane, car not ready in time for Q1GrosjeanCanada 2018Catastrophic engine failure (oil leak) moments after leaving the pits in Q1StrollBritain 2018Q1 spin/crash into the gravel at Wellington Straight, traced to an aero stability issue

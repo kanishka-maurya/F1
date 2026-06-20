@@ -60,12 +60,13 @@ def safe_int(val) -> int | None:
     except Exception:
         return None
 
+
 # =============================================================================
 # AGGREGATE ONE LAP'S TELEMETRY
 # =============================================================================
 
 def aggregate_lap_telemetry(car_data: pd.DataFrame,
-                            driver_code: str,
+                            driver_number: str,
                             lap_number: int) -> dict | None:
     """
     Aggregate raw car telemetry for one lap into a single summary row.
@@ -80,9 +81,9 @@ def aggregate_lap_telemetry(car_data: pd.DataFrame,
         Time     : timedelta into session
 
     Parameters:
-        car_data    : raw telemetry DataFrame for one lap
-        driver_code : driver abbreviation e.g. 'VER'
-        lap_number  : lap number int
+        car_data      : raw telemetry DataFrame for one lap
+        driver_number : raw driver number string e.g. '33'
+        lap_number    : lap number int
 
     Returns:
         dict of aggregated metrics or None if data is unusable
@@ -136,10 +137,11 @@ def aggregate_lap_telemetry(car_data: pd.DataFrame,
         avg_rpm = safe_int(rpm.mean()) if not rpm.empty else None
         max_rpm = safe_int(rpm.max())  if not rpm.empty else None
 
+        # FIX: key is now "driver_number" to match col_order and all downstream usage
         return {
-            "driver_code":        driver_code,
+            "driver_number":      driver_number,
             "lap_number":         lap_number,
-            "sample_count":       len(car_data),      
+            "sample_count":       len(car_data),
 
             # Speed
             "avg_speed_kph":      avg_speed_kph,
@@ -166,7 +168,7 @@ def aggregate_lap_telemetry(car_data: pd.DataFrame,
         }
 
     except Exception as e:
-        logging.debug(f"  Lap aggregation failed D={driver_code} L={lap_number}: {e}")
+        logging.debug(f"  Lap aggregation failed D={driver_number} L={lap_number}: {e}")
         return None
 
 
@@ -191,10 +193,11 @@ def extract_race_telemetry(session: requests.Session,
         4. Skip inlaps, outlaps, laps with no telemetry
 
     Parameters:
-        session    : loaded FastF1 session object
-        year       : season year
-        round_num  : race round number
-        race_info  : dict with race_name, circuit_ref, race_date
+        session           : loaded FastF1 session object
+        year              : season year
+        round_num         : race round number
+        race_info         : dict with race_name, circuit_ref, race_date
+        driver_number_map : map from driver number → driver_id
     """
     laps = session.laps
 
@@ -203,18 +206,18 @@ def extract_race_telemetry(session: requests.Session,
         return pd.DataFrame()
 
     all_records   = []
-    drivers       = laps["Driver"].unique()
+    drivers       = laps["DriverNumber"].unique()
     total_drivers = len(drivers)
 
     logging.info(f"  Processing {total_drivers} drivers...")
 
-    for d_idx, driver_code in enumerate(drivers, 1):
+    for d_idx, driver_number in enumerate(drivers, 1):
         logging.info(
-            f"  Driver {d_idx}/{total_drivers}: {driver_code}"
+            f"  Driver {d_idx}/{total_drivers}: {driver_number}"
         )
 
         # Get all laps for this driver
-        driver_laps = laps.pick_drivers(driver_code)
+        driver_laps = laps.pick_drivers(driver_number)
 
         if driver_laps.empty:
             continue
@@ -227,23 +230,21 @@ def extract_race_telemetry(session: requests.Session,
 
             # ── Skip inlaps and outlaps ───────────────────────────────────
             # These have distorted telemetry (slow pit lane speeds etc.)
-            # They would pollute your ML features
             is_inlap  = not pd.isnull(lap.get("PitInTime",  None))
             is_outlap = not pd.isnull(lap.get("PitOutTime", None))
 
             if is_inlap or is_outlap:
                 logging.debug(
-                    f"  Skipping {driver_code} L{lap_number} "
+                    f"  Skipping {driver_number} L{lap_number} "
                     f"(inlap={is_inlap}, outlap={is_outlap})"
                 )
                 continue
 
             # ── Skip laps with no accurate timing ────────────────────────
-            # FastF1 marks some laps as inaccurate (SC, red flag etc.)
             is_accurate = lap.get("IsAccurate", True)
             if not is_accurate:
                 logging.debug(
-                    f"  Skipping {driver_code} L{lap_number} (not accurate)"
+                    f"  Skipping {driver_number} L{lap_number} (not accurate)"
                 )
                 continue
 
@@ -252,12 +253,13 @@ def extract_race_telemetry(session: requests.Session,
                 car_data = lap.get_car_data()
             except Exception as e:
                 logging.debug(
-                    f"  get_car_data failed {driver_code} L{lap_number}: {e}"
+                    f"  get_car_data failed {driver_number} L{lap_number}: {e}"
                 )
                 continue
 
             # ── Aggregate ─────────────────────────────────────────────────
-            record = aggregate_lap_telemetry(car_data, driver_code, lap_number)
+            # FIX: pass driver_number (not a code) — consistent with key in aggregate_lap_telemetry
+            record = aggregate_lap_telemetry(car_data, str(driver_number), lap_number)
 
             if record is None:
                 continue
@@ -268,8 +270,7 @@ def extract_race_telemetry(session: requests.Session,
             record["race_name"]    = race_info.get("race_name")
             record["circuit_ref"]  = race_info.get("circuit_ref")
             record["race_date"]    = race_info.get("race_date")
-            record["driver_number"] = safe_int(                        
-                driver_number_map.get(driver_code))
+            record["driver_id"]    = driver_number_map.get(str(driver_number))
 
             all_records.append(record)
 
@@ -284,7 +285,7 @@ def extract_race_telemetry(session: requests.Session,
     # ── Column order ──────────────────────────────────────────────────────
     col_order = [
         "season", "round_number", "race_name", "circuit_ref", "race_date",
-        "driver_code", "driver_number", "lap_number", "sample_count",
+        "driver_number", "driver_id", "lap_number", "sample_count",
         "avg_speed_kph", "max_speed_kph", "min_speed_kph",
         "avg_throttle_pct", "full_throttle_pct",
         "heavy_braking_pct",
@@ -295,8 +296,9 @@ def extract_race_telemetry(session: requests.Session,
     col_order = [c for c in col_order if c in df.columns]
     df        = df[col_order]
 
+    # FIX: sort by driver_number (was driver_code which didn't exist)
     df = df.sort_values(
-        ["driver_code", "lap_number"]
+        ["driver_number", "lap_number"]
     ).reset_index(drop=True)
 
     return df
@@ -308,7 +310,7 @@ def extract_race_telemetry(session: requests.Session,
 
 def fetch_race_telemetry(session: requests.Session,
                          timeout: int,
-                         year: int, 
+                         year: int,
                          round_num: int,
                          cache_dir: Path,
                          schedule_dir: Path) -> pd.DataFrame:
@@ -321,30 +323,39 @@ def fetch_race_telemetry(session: requests.Session,
         weather=False  → not needed here
         messages=False → not needed here
     """
-    race_info = get_race_info_from_disk(session=session, schedule_dir=schedule_dir, year=year, round_num=round_num, timeout=timeout)
+    race_info = get_race_info_from_disk(
+        session=session,
+        schedule_dir=schedule_dir,
+        year=year,
+        round_num=round_num,
+        timeout=timeout,
+    )
 
     try:
         logging.info(f"  Loading FastF1 session {year} R{round_num:02d}...")
         fastf1_session = fastf1.get_session(year, round_num, "Q")
         fastf1_session.load(
             laps      = True,
-            telemetry = True,  
+            telemetry = True,
             weather   = False,
             messages  = False,
         )
         logging.info(f"  Session loaded ✓")
 
-        # Build driver_number_map from laps
+        # Build driver_number_map: str(DriverNumber) → DriverId
         driver_number_map = (
-            fastf1_session.laps[["Driver", "DriverNumber"]]
+            fastf1_session.results[["DriverNumber", "DriverId"]]
             .drop_duplicates()
-            .set_index("Driver")["DriverNumber"]
+            .set_index("DriverNumber")["DriverId"]
             .to_dict()
-        )  
+        )
+        # Ensure keys are strings for consistent lookup
+        driver_number_map = {str(k): v for k, v in driver_number_map.items()}
 
     except Exception as e:
         logging.error(
-            f"  FastF1 session load failed {year} R{round_num:02d}: {e}"
+            f"  FastF1 session load failed {year} R{round_num:02d}: {e}",
+            exc_info=True,  # FIX: full traceback so failures are visible
         )
         return pd.DataFrame()
 
@@ -434,11 +445,18 @@ def fetch_telemetry(session: requests.Session,
             logging.info(f"  Fetching {year} R{round_num:02d} telemetry...")
             try:
                 df_round = fetch_race_telemetry(
-                    session=session, year=year, round_num=round_num, cache_dir=cache_dir, schedule_dir=schedule_dir, timeout=timeout
+                    session      = session,
+                    year         = year,
+                    round_num    = round_num,
+                    cache_dir    = cache_dir,
+                    schedule_dir = schedule_dir,
+                    timeout      = timeout,
                 )
             except Exception as e:
+                # FIX: exc_info=True so you see the full traceback, not just the message
                 logging.error(
-                    f"  Failed {year} R{round_num:02d}: {e} — skipping"
+                    f"  Failed {year} R{round_num:02d}: {e} — skipping",
+                    exc_info=True,
                 )
                 continue
 
@@ -450,10 +468,12 @@ def fetch_telemetry(session: requests.Session,
 
             # ── Save individual race file ─────────────────────────────────
             df_round.to_parquet(save_path, index=False, compression="snappy")
+
+            # FIX: reference driver_number (was driver_code — column doesn't exist)
             logging.info(
                 f"  Saved {year}_R{round_num:02d}_telemetry.parquet "
                 f"({len(df_round):,} rows | "
-                f"drivers={df_round['driver_code'].nunique()})"
+                f"drivers={df_round['driver_number'].nunique()})"
             )
             new_dfs.append(df_round)
 
@@ -472,8 +492,9 @@ def fetch_telemetry(session: requests.Session,
             master = pd.read_parquet(master_path)
             master = master[master["season"] != current_year]
             master = pd.concat([master, new_data], ignore_index=True)
+            # FIX: sort by driver_number (was driver_code)
             master = master.sort_values(
-                ["season", "round_number", "driver_code", "lap_number"]
+                ["season", "round_number", "driver_number", "lap_number"]
             ).reset_index(drop=True)
 
         else:
@@ -484,24 +505,25 @@ def fetch_telemetry(session: requests.Session,
                 logging.warning("  No telemetry parquet files found.")
                 master = pd.DataFrame()
             else:
+                # FIX: sort by driver_number (was driver_code)
                 master = pd.concat(
                     [pd.read_parquet(f) for f in all_files],
                     ignore_index=True
                 ).sort_values(
-                    ["season", "round_number", "driver_code", "lap_number"]
+                    ["season", "round_number", "driver_number", "lap_number"]
                 ).reset_index(drop=True)
 
         master.to_parquet(master_path, index=False, compression="snappy")
         logging.info(f"  Master updated — {len(master):,} total rows")
 
-    else: 
-        # ── No new data ───────────────────────────────────────────────────────
+    else:
+        # ── No new data ───────────────────────────────────────────────────
         if not master_path.exists():
             logging.warning("  No new data and no master file — returning empty | Set FORCE = True.")
             return pd.DataFrame()
 
         logging.info("  No new seasons fetched — master unchanged, loading from disk")
-        master = pd.read_parquet(master_path)  
+        master = pd.read_parquet(master_path)
 
     return master
 
@@ -510,7 +532,7 @@ def fetch_telemetry(session: requests.Session,
 if __name__ == "__main__":
     # BUILD SESSION
     SESSION = build_session()
-    
+
     df = fetch_telemetry(
         session      = SESSION,
         timeout      = config.TIMEOUT,
@@ -527,7 +549,7 @@ if __name__ == "__main__":
     print(f"\nShape        : {df.shape}")
     print(f"Seasons      : {sorted(df['season'].unique())}")
     print(f"Columns      : {list(df.columns)}")
-    
+
     print("\nTELEMETRY DATA:")
     logging.info(df.head())
     print(df.head())
