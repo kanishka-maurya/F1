@@ -33,11 +33,6 @@ def extract_weather(session, year: int,
         WindDirection — wind direction in degrees (0–359)
         WindSpeed     — wind speed m/s
 
-    We add:
-        session_time_ms — Time converted to milliseconds for DB storage
-        is_wet_session  — True if ANY rainfall reading is True in this session
-        avg_track_temp  — average track temp for the session (summary feature)
-        avg_air_temp    — average air temp for the session
     """
     weather = session.weather_data
 
@@ -64,24 +59,6 @@ def extract_weather(session, year: int,
         df["session_time_ms"] = df["session_time"].apply(timedelta_to_ms)
         df.drop(columns=["session_time"], inplace=True)
 
-    # ── Type casting ──────────────────────────────────────────────────────
-    df["rainfall"]          = df["rainfall"].astype(bool)
-    df["air_temp_c"]        = pd.to_numeric(df["air_temp_c"],        errors="coerce")
-    df["track_temp_c"]      = pd.to_numeric(df["track_temp_c"],      errors="coerce")
-    df["humidity_pct"]      = pd.to_numeric(df["humidity_pct"],      errors="coerce")
-    df["pressure_mbar"]     = pd.to_numeric(df["pressure_mbar"],     errors="coerce")
-    df["wind_speed_ms"]     = pd.to_numeric(df["wind_speed_ms"],     errors="coerce")
-    df["wind_direction_deg"]= pd.to_numeric(df["wind_direction_deg"],errors="coerce")
-
-    # ── Session-level summary features ───────────────────────────────────
-    # These are constant per race — useful for ML without needing
-    # to aggregate later during feature engineering
-    df["is_wet_session"] = df["rainfall"].any()
-    df["avg_track_temp"] = round(df["track_temp_c"].mean(), 2)
-    df["avg_air_temp"]   = round(df["air_temp_c"].mean(),   2)
-    df["max_track_temp"] = round(df["track_temp_c"].max(),  2)
-    df["min_track_temp"] = round(df["track_temp_c"].min(),  2)
-
     # ── Add race context columns ──────────────────────────────────────────
     df["season"]       = year
     df["round_number"] = round_num
@@ -94,9 +71,7 @@ def extract_weather(session, year: int,
         "session_time_ms",
         "air_temp_c", "track_temp_c", "humidity_pct",
         "pressure_mbar", "wind_speed_ms", "wind_direction_deg",
-        "rainfall",
-        "is_wet_session", "avg_track_temp", "avg_air_temp",
-        "max_track_temp", "min_track_temp",
+        "rainfall"
     ]
     col_order = [c for c in col_order if c in df.columns]
     df = df[col_order].reset_index(drop=True)
@@ -236,9 +211,7 @@ def fetch_weather_data(session: requests.Session,
             df_round.to_parquet(save_path, index=False, compression="snappy")
             logging.info(
                 f"  Saved {year}_R{round_num:02d}_weather.parquet "
-                f"({len(df_round)} rows | "
-                f"wet={df_round['is_wet_session'].iloc[0]} | "
-                f"avg_track={df_round['avg_track_temp'].iloc[0]}°C)"
+                f"({len(df_round)} rows"
             )
             new_dfs.append(df_round)
 
@@ -315,8 +288,7 @@ if __name__ == "__main__":
     print(f"\nShape      : {df.shape}")
     print(f"Seasons    : {sorted(df['season'].unique())}")
     print(f"Columns    : {list(df.columns)}")
-    print(f"Wet races  : {df.drop_duplicates('round_number')['is_wet_session'].sum()}")
-    
+   
     print("\nWEATHER DATA:")
     logging.info(df.head())
     print(df.head())

@@ -55,37 +55,21 @@ def extract_results(races: list, year: int, round_num: int) -> pd.DataFrame:
             "points":               r.get("points"),
             "laps_completed":       r.get("laps"),
             "status":               r.get("status"),
-            "race_time_millis":     time_obj.get("millis"),
-            "race_time_text":       time_obj.get("time"),
- 
-            # Fastest lap
-            "fastest_lap_number":   fastest_lap.get("lap"),
-            "fastest_lap_time":     fastest_lap.get("Time", {}).get("time"),
-            "fastest_lap_rank":     fastest_lap.get("rank"),
-            "fastest_lap_speed":    avg_speed.get("speed"),
-            "fastest_lap_speed_units": avg_speed.get("units"),
+            "race_time_millis":     time_obj.get("millis")
         })
  
     df = pd.DataFrame(records)
  
     # ── Type casting ──────────────────────────────────────────────────────
     int_cols = ["grid_position", "finish_position", "driver_number",
-                "laps_completed", "fastest_lap_number", "fastest_lap_rank",
-                "race_time_millis"]
+                "laps_completed", "race_time_millis"]
+    
     for col in int_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
  
     df["points"]    = pd.to_numeric(df["points"],    errors="coerce")
     df["race_date"] = pd.to_datetime(df["race_date"], errors="coerce").dt.date
- 
-    # ── Derived boolean flags ─────────────────────────────────────────────
-    df["is_winner"]  = df["finish_position"] == 1
-    df["is_podium"]  = df["finish_position"].isin([1, 2, 3])
-    df["is_points"]  = df["points"] > 0
-    df["is_dnf"]     = ~df["position_text"].isin(
-                        [str(i) for i in range(1, 21)]
-                       )
  
     return df
  
@@ -231,7 +215,6 @@ if __name__ == "__main__":
  
     print(f"\nShape       : {df.shape}")
     print(f"Seasons     : {sorted(df['season'].unique())}")
-    print(f"Winners     : {df[df['is_winner']]['driver_ref'].value_counts().head()}")
     
     print("\nRACE RESULTS DATA:")
     logging.info(df.head())

@@ -90,10 +90,10 @@ def extract_laps(all_laps: list[dict], year: int,
         ]
 
     Output (one row per driver per lap):
-        season  round  driver_ref   lap_number  position  lap_time  lap_time_ms
-        2024    1      verstappen   1           1         1:38.149  98149.0
-        2024    1      leclerc      1           2         1:38.576  98576.0
-        2024    1      verstappen   2           1         1:32.401  92401.0
+        season  round  driver_ref   lap_number  position  lap_time_ms
+        2024    1      verstappen   1           1         98149.0
+        2024    1      leclerc      1           2         98576.0
+        2024    1      verstappen   2           1         92401.0
         ...
     """
     if not all_laps:
@@ -115,7 +115,6 @@ def extract_laps(all_laps: list[dict], year: int,
                 "driver_ref":   t.get("driverId"),
                 "lap_number":   lap_number,
                 "position":     t.get("position"),
-                "lap_time":     t.get("time"),
                 "lap_time_ms":  parse_laptime_to_ms(t.get("time")),
             })
 

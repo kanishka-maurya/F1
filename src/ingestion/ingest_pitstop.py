@@ -27,7 +27,20 @@ def fetch_all_pitstop_pages(session: requests.Session, year: int, round_num: int
     all_pitstops = []
     offset       = 0
 
+    # Safety guard against runaway pagination if the API reports a
+    # total that never gets satisfied (stale/incorrect "total" field).
+    max_iterations = 50
+    iterations     = 0
+
     while True:
+        iterations += 1
+        if iterations > max_iterations:
+            logging.error(
+                f"  Pagination exceeded {max_iterations} iterations for "
+                f"{year} R{round_num:02d} — aborting to avoid infinite loop"
+            )
+            break
+
         url = (f"{config.BASE_URL}/{year}/{round_num}/pitstops.json"
                f"?limit={config.PAGE_LIMIT}&offset={offset}")
         try:
@@ -65,6 +78,33 @@ def fetch_all_pitstop_pages(session: requests.Session, year: int, round_num: int
 
 
 # =============================================================================
+# HELPERS
+# =============================================================================
+
+def parse_pitstop_duration_to_ms(duration_str: str):
+    """
+    Parse a pit stop duration into milliseconds.
+
+    The Ergast/Jolpica API returns pit stop "duration" as plain seconds
+    (e.g. "23.456"), NOT a lap-time format like "1:23.456". Try the
+    existing lap-time parser first (in case duration ever includes a
+    minutes component, which can happen for very long stops/penalties),
+    and fall back to a direct float-seconds parse otherwise.
+    """
+    if duration_str is None:
+        return None
+
+    # Long stops (rare, e.g. red flag pit stops) can be "1:23.456"
+    if ":" in str(duration_str):
+        return parse_laptime_to_ms(duration_str)
+
+    try:
+        return float(duration_str) * 1000
+    except (TypeError, ValueError):
+        return None
+
+
+# =============================================================================
 # EXTRACT
 # =============================================================================
 
@@ -91,7 +131,7 @@ def extract_pitstops(all_pitstops: list[dict], year: int,
     records = []
     for p in all_pitstops:
         duration_str = p.get("duration")
-        duration_ms  = parse_laptime_to_ms(duration_str)
+        duration_ms  = parse_pitstop_duration_to_ms(duration_str)
 
         records.append({
             # Race context
@@ -106,7 +146,6 @@ def extract_pitstops(all_pitstops: list[dict], year: int,
             "stop_number":     p.get("stop"),
             "lap_number":      p.get("lap"),
             "local_time":      p.get("time"),
-            "duration":        duration_str,
             "duration_ms":     duration_ms,
         })
 
@@ -119,8 +158,6 @@ def extract_pitstops(all_pitstops: list[dict], year: int,
     df["stop_number"] = pd.to_numeric(df["stop_number"], errors="coerce").astype("Int16")
     df["lap_number"]  = pd.to_numeric(df["lap_number"],  errors="coerce").astype("Int16")
     df["duration_ms"] = pd.to_numeric(df["duration_ms"], errors="coerce")
-    df["race_date"]   = pd.to_datetime(df["race_date"],  errors="coerce").dt.date
-
 
     # ── Race-level pit stop stats per driver ──────────────────────────────
     # Total stops per driver in this race
@@ -132,15 +169,6 @@ def extract_pitstops(all_pitstops: list[dict], year: int,
     )
     df = df.merge(stop_counts, on="driver_ref", how="left")
 
-    # Average pit duration per driver this race
-    avg_duration = (
-        df.groupby("driver_ref")["duration_ms"]
-        .mean()
-        .round(1)
-        .reset_index()
-        .rename(columns={"duration_ms": "avg_duration_ms_race"})
-    )
-    df = df.merge(avg_duration, on="driver_ref", how="left")
 
     # ── Sort ──────────────────────────────────────────────────────────────
     df = df.sort_values(["driver_ref", "stop_number"]).reset_index(drop=True)
@@ -157,7 +185,7 @@ def fetch_race_pitstops(session: requests.Session, timeout: int, year: int, roun
     Fetch and extract all pit stop data for one race.
     """
     race_info    = get_race_info_from_disk(session=session, schedule_dir=schedule_dir, year=year, round_num=round_num, timeout=timeout)
-    all_pitstops = fetch_all_pitstop_pages(session=session, year=year, round=round_num, timeout=timeout)
+    all_pitstops = fetch_all_pitstop_pages(session=session, year=year, round_num=round_num, timeout=timeout)
 
     if not all_pitstops:
         return pd.DataFrame()
@@ -281,8 +309,16 @@ def fetch_pit_stops(
         if master_path.exists():
             master = pd.read_parquet(master_path)
 
-            # Remove current season rows to avoid duplicates
-            master = master[master["season"] != current_year]
+            # Remove any (season, round_number) pairs that we just refetched,
+            # so re-running with force=True or single_year on a past season
+            # doesn't duplicate rows. (Previously this only dropped the
+            # current season, which missed forced refetches of past seasons.)
+            refetched_keys = set(
+                zip(new_data["season"], new_data["round_number"])
+            )
+            master_keys = list(zip(master["season"], master["round_number"]))
+            keep_mask = [key not in refetched_keys for key in master_keys]
+            master = master[keep_mask]
 
             master = pd.concat([master, new_data], ignore_index=True)
             master = master.sort_values(
